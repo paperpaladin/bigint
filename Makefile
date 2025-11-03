@@ -12,7 +12,8 @@ test-asan:
 	$(CC) -std=c11 -g -O1 -Wall -Wextra -fsanitize=address,undefined \
 	      -fno-omit-frame-pointer -ffile-prefix-map=$(CURDIR)=. \
 	      -o bigint-asan bigint.c
-	@BIGINT=./bigint-asan t/run.sh
+	@BIGINT=./bigint-asan t/run.sh 15000
+
 
 clean:
 	rm -f bigint bigint-asan
