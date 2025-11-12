@@ -35,7 +35,11 @@ char *bi_to_dec(const bi *x);
 /* -1, 0, +1. A total order, so an unnormalised operand would break it. */
 int bi_cmp(const bi *a, const bi *b);
 
+/* r may alias either operand. */
+void bi_add(bi *r, const bi *a, const bi *b);
+
 void bi_neg(bi *r, const bi *a);   /* r = -a; r may alias a */
+
 
 
 #endif

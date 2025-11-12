@@ -141,6 +141,17 @@ char *bi_to_dec(const bi *x)
     return buf;
 }
 
+static void bi_swap(bi *x, bi *y) { bi t = *x; *x = *y; *y = t; }
+
+static void bi_copy(bi *r, const bi *a)
+{
+    if (r == a) return;
+    grow(r, a->n ? a->n : 1);
+    memcpy(r->d, a->d, (size_t)a->n * sizeof *a->d);
+    r->n = a->n;
+    r->sign = a->sign;
+}
+
 /* Magnitude comparison. -1, 0, +1 for |a| <, ==, > |b|. */
 static int ucmp(const bi *a, const bi *b)
 {
@@ -158,13 +169,70 @@ int bi_cmp(const bi *a, const bi *b)
     return a->sign * ucmp(a, b);
 }
 
+/* |r| = |a| + |b|. r must not alias either operand. Sign is the caller's. */
+static void uadd(bi *r, const bi *a, const bi *b)
+{
+    const bi *lo = a->n < b->n ? a : b, *hi = a->n < b->n ? b : a;
+    uint64_t carry = 0;
+    int i;
+
+    grow(r, hi->n + 1);
+    for (i = 0; i < lo->n; i++) {
+        carry += (uint64_t)hi->d[i] + lo->d[i];
+        r->d[i] = (bi_limb)carry;
+        carry >>= 32;
+    }
+    for (; i < hi->n; i++) {
+        carry += hi->d[i];
+        r->d[i] = (bi_limb)carry;
+        carry >>= 32;
+    }
+    r->d[i] = (bi_limb)carry;      /* the one extra limb, usually zero */
+    r->n = hi->n + 1;
+}
+
+/* |r| = |a| - |b|, and |a| >= |b| is the caller's problem. r must not alias.
+ * The result can be many limbs shorter than a (999...9 - 999...8), so the
+ * norm() at the end is not optional. */
+static void usub(bi *r, const bi *a, const bi *b)
+{
+    int64_t borrow = 0;
+    int i;
+
+    grow(r, a->n ? a->n : 1);
+    for (i = 0; i < a->n; i++) {
+        int64_t t = (int64_t)a->d[i] - borrow - (i < b->n ? b->d[i] : 0);
+        if (t < 0) { t += (int64_t)1 << 32; borrow = 1; } else borrow = 0;
+        r->d[i] = (bi_limb)t;
+    }
+    r->n = a->n;
+}
+
+/* shortcut: every binary op builds its answer in a fresh temp and swaps it
+ * into place, which costs a malloc/free pair per call but makes aliasing
+ * (bi_add(&x, &x, &x)) correct by construction. Upgrade path is an in-place
+ * fast path guarded by a pointer-equality check, once a profile says so. */
+void bi_add(bi *r, const bi *a, const bi *b)
+{
+    bi t;
+    bi_init(&t);
+    if (a->sign == 0) bi_copy(&t, b);
+    else if (b->sign == 0) bi_copy(&t, a);
+    else if (a->sign == b->sign) { uadd(&t, a, b); t.sign = a->sign; }
+    else {
+        int c = ucmp(a, b);
+        if (c == 0) bi_set_zero(&t);
+        else if (c > 0) { usub(&t, a, b); t.sign = a->sign; }
+        else { usub(&t, b, a); t.sign = b->sign; }
+    }
+    norm(&t);
+    bi_swap(r, &t);
+    bi_free(&t);
+}
+
 void bi_neg(bi *r, const bi *a)
 {
-    if (r != a) {
-        grow(r, a->n ? a->n : 1);
-        memcpy(r->d, a->d, (size_t)a->n * sizeof *a->d);
-        r->n = a->n;
-    }
+    bi_copy(r, a);
     r->sign = -a->sign;
 }
 
@@ -192,7 +260,7 @@ static int split(char *line, char *arg[3])
  * error, which is also what Python says about int("") -- the line protocol
  * cannot carry an empty or space-containing operand. */
 static const struct { const char *name; int ary; } OPS[] = {
-    { "dec", 1 }, { "neg", 1 }, { "cmp", 2 },
+    { "dec", 1 }, { "neg", 1 }, { "cmp", 2 }, { "add", 2 },
 };
 
 static void emit(const bi *x) { char *s = bi_to_dec(x); puts(s); free(s); }
@@ -228,6 +296,8 @@ int main(void)
         if (!strcmp(op, "dec")) emit(&a);
         else if (!strcmp(op, "neg")) { bi_neg(&r, &a); emit(&r); }
         else if (!strcmp(op, "cmp")) printf("%d\n", bi_cmp(&a, &b));
+        else if (!strcmp(op, "add")) { bi_add(&r, &a, &b); emit(&r); }
+
     }
     bi_free(&a);
     bi_free(&b);
