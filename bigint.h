@@ -38,6 +38,8 @@ int bi_cmp(const bi *a, const bi *b);
 /* r may alias either operand. */
 void bi_add(bi *r, const bi *a, const bi *b);
 void bi_sub(bi *r, const bi *a, const bi *b);
+void bi_mul(bi *r, const bi *a, const bi *b);
+
 
 void bi_neg(bi *r, const bi *a);   /* r = -a; r may alias a */
 void bi_abs(bi *r, const bi *a);   /* r = |a|; r may alias a */
