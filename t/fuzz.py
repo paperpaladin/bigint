@@ -29,6 +29,16 @@ BUCKETS = [(0, 0), (1, 4), (28, 36), (60, 70), (120, 200), (900, 1100),
            (15800, 16000)]
 WEIGHTS = [6, 14, 18, 18, 20, 18, 6]
 
+# bigint refuses to build a value wider than this from a shift or a power.
+# It is bigint's own ceiling, not Python's, so the oracle has to know it.
+MAX_BITS = 1 << 24
+
+# Shift counts clustered on the limb and word boundaries, where an off-by-one
+# in the limbs/bits split shows up.
+SHIFT_EDGES = [0, 1, 31, 32, 33, 63, 64, 65, 95, 96, 127, 128,
+               1023, 1024, 1025]
+
+
 
 def rand_mag(rnd, cap=None):
     lo, hi = rnd.choices(BUCKETS, WEIGHTS)[0]
@@ -46,6 +56,17 @@ def rand_val(rnd, cap=None, nonneg=False):
     if not nonneg and v and rnd.random() < 0.5:
         v = -v
     return v
+
+
+def rand_shift(rnd):
+    r = rnd.random()
+    if r < 0.20:
+        return rnd.choice(SHIFT_EDGES)
+    if r < 0.85:
+        return rnd.randint(0, 2500)
+    if r < 0.93:
+        return -rnd.randint(1, 1000)            # must be rejected
+    return rnd.choice([MAX_BITS, MAX_BITS + 1, 2**70, 10**30])
 
 
 def ev(op, args):
@@ -67,6 +88,17 @@ def ev(op, args):
         return str(vals[0] - vals[1])
     if op == "mul":
         return str(vals[0] * vals[1])
+    if op in ("shl", "shr"):
+        x, c = vals
+        if c < 0:
+            return "E negshift"
+        if op == "shr":
+            return str(x >> c) if x else "0"
+        if x == 0:
+            return "0"
+        if c + x.bit_length() > MAX_BITS:
+            return "E toobig"
+        return str(x << c)
     if op in ("divf", "mod", "divmod"):
         if vals[1] == 0:
             return "E divzero"
@@ -84,12 +116,15 @@ def ev(op, args):
 
 
 ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2,
-         "mul": 2, "divf": 2, "mod": 2, "divmod": 2}
+         "mul": 2, "divf": 2, "mod": 2, "divmod": 2,
+         "shl": 2, "shr": 2}
 OPS = list(ARITY)
 
 
 def gen(rnd):
     op = rnd.choice(OPS)
+    if op in ("shl", "shr"):
+        return op, [str(rand_val(rnd)), str(rand_shift(rnd))]
     return op, [str(rand_val(rnd)) for _ in range(ARITY[op])]
 
 
@@ -159,6 +194,24 @@ CORPUS = [
     ("divmod", [str(2**16000 - 1), str(2**16000 - 1)]),
     ("divmod", [str(2**16000 - 1), str(2**16000)]),
     ("divmod", ["1", str(10**500)]), ("divmod", ["-1", str(10**500)]),
+    # >> on a negative value floors in Python. -1 >> n is -1 forever.
+    ("shr", ["-1", "1"]), ("shr", ["-1", "1000"]), ("shr", ["-1", str(2**70)]),
+    ("shr", ["-5", "1"]), ("shr", ["-5", "2"]), ("shr", ["-5", "3"]),
+    ("shr", ["5", "1"]), ("shr", ["-4", "1"]), ("shr", ["-4", "2"]),
+    ("shr", ["0", "0"]), ("shr", ["0", str(2**70)]), ("shr", ["7", "-1"]),
+    ("shr", [str(2**16000 - 1), "16000"]), ("shr", [str(2**16000), "16000"]),
+    ("shr", [str(-(2**16000) - 1), "15999"]),
+    ("shl", ["0", str(2**70)]), ("shl", ["1", "-1"]), ("shl", ["0", "-1"]),
+    ("shl", ["1", "31"]), ("shl", ["1", "32"]), ("shl", ["1", "33"]),
+    ("shl", ["-1", "32"]), ("shl", [str(2**32 - 1), "1"]),
+    # The ceiling itself: 1 << MAX_BITS is one bit too wide and must be
+    # refused. The largest *accepted* shift is deliberately not exercised --
+    # a 16-Mbit value costs seconds to print, because base conversion is
+    # quadratic -- so the success side is checked at 64 Kbit instead.
+    ("shl", ["1", "65535"]), ("shl", ["1", str(MAX_BITS)]),
+    ("shl", ["1", str(MAX_BITS + 1)]), ("shl", ["1", str(2**70)]),
+
+
 
 
 

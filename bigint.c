@@ -395,7 +395,7 @@ int bi_divmod(bi *q, bi *rem, const bi *a, const bi *b)
 {
     bi tq, tr;
 
-    if (b->sign == 0) return -1;
+    if (b->sign == 0) return BI_EDIVZERO;
 
     bi_init(&tq);
     bi_init(&tr);
@@ -416,7 +416,118 @@ int bi_divmod(bi *q, bi *rem, const bi *a, const bi *b)
     if (rem) bi_swap(rem, &tr);
     bi_free(&tq);
     bi_free(&tr);
-    return 0;
+    return BI_OK;
+}
+
+int bi_bits(const bi *x)
+{
+    if (x->n == 0) return 0;
+    return x->n * 32 - nlz32(x->d[x->n - 1]);
+}
+
+/* |r| = |a| << c. r must not alias a. */
+static void ushl(bi *r, const bi *a, uint64_t c)
+{
+    int limbs = (int)(c / 32), bits = (int)(c % 32);
+    int n = a->n + limbs + 1, i;
+
+    grow(r, n);
+    memset(r->d, 0, (size_t)n * sizeof *r->d);
+    for (i = 0; i < a->n; i++) {
+        uint64_t v = (uint64_t)a->d[i] << bits;
+        r->d[limbs + i]     |= (bi_limb)v;
+        r->d[limbs + i + 1] |= (bi_limb)(v >> 32);
+    }
+    r->n = n;
+    norm(r);
+}
+
+/* |r| = |a| >> c, returning 1 if any set bit was discarded. That flag is
+ * what makes Python's floor semantics possible for negative values. */
+static int ushr(bi *r, const bi *a, uint64_t c)
+{
+    int limbs, bits, n, i, lost = 0;
+
+    if (c >= (uint64_t)a->n * 32) {
+        lost = a->n != 0;
+        bi_set_zero(r);
+        return lost;
+    }
+    limbs = (int)(c / 32);
+    bits = (int)(c % 32);
+    for (i = 0; i < limbs; i++) if (a->d[i]) lost = 1;
+    if (bits && (a->d[limbs] & ((1u << bits) - 1))) lost = 1;
+
+    n = a->n - limbs;
+    grow(r, n);
+    for (i = 0; i < n; i++) {
+        uint64_t v = a->d[limbs + i] >> bits;
+        if (bits && limbs + i + 1 < a->n)
+            v |= (uint64_t)a->d[limbs + i + 1] << (32 - bits);
+        r->d[i] = (bi_limb)v;
+    }
+    r->n = n;
+    norm(r);
+    return lost;
+}
+
+/* k as a uint64_t, saturating: anything beyond two limbs is "enormous",
+ * which is all either caller needs to know. */
+static uint64_t shift_count(const bi *k)
+{
+    uint64_t c;
+    if (k->n > 2) return UINT64_MAX;
+    c = k->n > 0 ? k->d[0] : 0;
+    if (k->n > 1) c |= (uint64_t)k->d[1] << 32;
+    return c;
+}
+
+int bi_shl(bi *r, const bi *a, const bi *k)
+{
+    bi t;
+    uint64_t c;
+
+    if (k->sign < 0) return BI_ENEGSHIFT;
+    if (a->sign == 0) { bi_set_zero(r); return BI_OK; }  /* 0 << anything */
+    c = shift_count(k);
+    if (c > BI_MAX_BITS || c + (uint64_t)bi_bits(a) > BI_MAX_BITS)
+        return BI_ETOOBIG;
+
+    bi_init(&t);
+    ushl(&t, a, c);
+    t.sign = t.n ? a->sign : 0;
+    bi_swap(r, &t);
+    bi_free(&t);
+    return BI_OK;
+}
+
+/* Python's >> on a negative value floors, it does not truncate:
+ * -1 >> 1 is -1, not 0, and -5 >> 1 is -3, not -2. So shift the magnitude
+ * and add one back whenever a set bit fell off the bottom. */
+int bi_shr(bi *r, const bi *a, const bi *k)
+{
+    bi t;
+    int lost;
+
+    if (k->sign < 0) return BI_ENEGSHIFT;
+    if (a->sign == 0) { bi_set_zero(r); return BI_OK; }
+
+    bi_init(&t);
+    lost = ushr(&t, a, shift_count(k));
+    t.sign = t.n ? 1 : 0;
+    if (a->sign < 0) {
+        if (lost) {
+            bi one;
+            bi_init(&one);
+            bi_set_i64(&one, 1);
+            bi_add(&t, &t, &one);
+            bi_free(&one);
+        }
+        t.sign = t.n ? -1 : 0;
+    }
+    bi_swap(r, &t);
+    bi_free(&t);
+    return BI_OK;
 }
 
 void bi_sub(bi *r, const bi *a, const bi *b)
@@ -464,6 +575,7 @@ static int split(char *line, char *arg[3])
 static const struct { const char *name; int ary; } OPS[] = {
     { "dec", 1 }, { "neg", 1 }, { "cmp", 2 }, { "add", 2 }, { "sub", 2 }, { "abs", 1 }, { "mul", 2 },
     { "divf", 2 }, { "mod", 2 }, { "divmod", 2 },
+    { "shl", 2 }, { "shr", 2 },
 };
 
 /* Decimal output cannot reveal an unnormalised result: bi_to_dec divides the
@@ -485,6 +597,14 @@ static void emit(const bi *x)
     s = bi_to_dec(x);
     puts(s);
     free(s);
+}
+
+static int fail(int e)
+{
+    static const char *const msg[] = { "", "divzero", "negshift", "negpow",
+                                       "toobig" };
+    printf("E %s\n", msg[e]);
+    return 1;
 }
 
 static void emit2(const bi *x, const bi *y)
@@ -537,13 +657,22 @@ int main(void)
         else if (!strcmp(op, "abs")) { bi_abs(&r, &a); emit(&r); }
         else if (!strcmp(op, "mul")) { bi_mul(&r, &a, &b); emit(&r); }
         else if (!strcmp(op, "divf")) {
-            if (bi_divmod(&r, NULL, &a, &b)) puts("E divzero"); else emit(&r);
+            int e = bi_divmod(&r, NULL, &a, &b);
+            if (e) fail(e); else emit(&r);
         } else if (!strcmp(op, "mod")) {
-            if (bi_divmod(NULL, &r, &a, &b)) puts("E divzero"); else emit(&r);
+            int e = bi_divmod(NULL, &r, &a, &b);
+            if (e) fail(e); else emit(&r);
         } else if (!strcmp(op, "divmod")) {
-            if (bi_divmod(&r, &r2, &a, &b)) puts("E divzero");
-            else { emit2(&r, &r2); }
+            int e = bi_divmod(&r, &r2, &a, &b);
+            if (e) fail(e); else emit2(&r, &r2);
+        } else if (!strcmp(op, "shl")) {
+            int e = bi_shl(&r, &a, &b);
+            if (e) fail(e); else emit(&r);
+        } else if (!strcmp(op, "shr")) {
+            int e = bi_shr(&r, &a, &b);
+            if (e) fail(e); else emit(&r);
         }
+
 
 
 

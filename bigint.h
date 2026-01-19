@@ -11,6 +11,21 @@
 
 typedef uint32_t bi_limb;
 
+/* Error codes. BI_ETOOBIG is a self-imposed ceiling, not a property of the
+ * mathematics: Python would happily evaluate 1 << (1 << 40) until the machine
+ * ran out of memory, and this refuses instead. The fuzzer models the same
+ * rule so the two still agree. */
+#define BI_OK         0
+#define BI_EDIVZERO   1
+#define BI_ENEGSHIFT  2
+#define BI_ENEGPOW    3
+#define BI_ETOOBIG    4
+
+/* shortcut: 16 Mbit, i.e. 2 MB of limbs, as the largest value any single
+ * operation will produce from a small input. Raise it, or drop the check and
+ * let malloc fail, if anyone ever wants bigger. */
+#define BI_MAX_BITS   (1u << 24)
+
 /* Normalised at all times: n == 0 || d[n-1] != 0, and sign == 0 iff n == 0.
  * An unnormalised value with leading zero limbs compares unequal to the same
  * number normalised, so every mutating path ends in norm(). */
@@ -45,6 +60,16 @@ void bi_mul(bi *r, const bi *a, const bi *b);
  * divisor, so bi_divmod(-7, 2) is (-4, 1) and not (-3, -1). Returns -1 and
  * changes nothing if b is zero. q and rem may be NULL or alias a or b. */
 int bi_divmod(bi *q, bi *rem, const bi *a, const bi *b);
+
+/* Shifts, again with PYTHON's semantics: >> on a negative value floors, so
+ * -1 >> 1 is -1 and not 0. A negative shift count is BI_ENEGSHIFT, matching
+ * Python's ValueError; a left shift whose result would exceed BI_MAX_BITS is
+ * BI_ETOOBIG. */
+int bi_shl(bi *r, const bi *a, const bi *k);
+int bi_shr(bi *r, const bi *a, const bi *k);
+
+int bi_bits(const bi *x);   /* bit length of |x|; 0 for zero, as Python */
+
 
 
 
