@@ -419,6 +419,56 @@ int bi_divmod(bi *q, bi *rem, const bi *a, const bi *b)
     return BI_OK;
 }
 
+/* Python's bitwise operators act on an infinite two's-complement
+ * representation, so -1 & 5 is 5 and -1 | 0 is -1. Sign-magnitude has no
+ * such representation, so build one: n limbs where n is one more than either
+ * operand needs, which guarantees the top limb is 0 for a non-negative value
+ * and 0xffffffff for a negative one, making the sign bit of limb n-1 a
+ * reliable sign for the result. */
+static void twos(bi_limb *out, int n, const bi *x)
+{
+    int i;
+    for (i = 0; i < n; i++) out[i] = i < x->n ? x->d[i] : 0;
+    if (x->sign < 0) {
+        for (i = 0; i < n; i++) out[i] = ~out[i];
+        for (i = 0; i < n; i++) if (++out[i] != 0) break;
+    }
+}
+
+static void bitop(bi *r, const bi *a, const bi *b, char kind)
+{
+    int n = (a->n > b->n ? a->n : b->n) + 1, i;
+    bi_limb *ta = xrealloc(NULL, (size_t)n * sizeof *ta);
+    bi_limb *tb = xrealloc(NULL, (size_t)n * sizeof *tb);
+    bi t;
+
+    bi_init(&t);
+    twos(ta, n, a);
+    twos(tb, n, b);
+    grow(&t, n);
+    for (i = 0; i < n; i++)
+        t.d[i] = kind == '&' ? (ta[i] & tb[i])
+               : kind == '|' ? (ta[i] | tb[i])
+                             : (ta[i] ^ tb[i]);
+    t.n = n;
+    if (t.d[n - 1] & 0x80000000u) {        /* negate back to sign-magnitude */
+        for (i = 0; i < n; i++) t.d[i] = ~t.d[i];
+        for (i = 0; i < n; i++) if (++t.d[i] != 0) break;
+        t.sign = -1;
+    } else {
+        t.sign = 1;
+    }
+    norm(&t);
+    bi_swap(r, &t);
+    bi_free(&t);
+    free(ta);
+    free(tb);
+}
+
+void bi_and(bi *r, const bi *a, const bi *b) { bitop(r, a, b, '&'); }
+void bi_or (bi *r, const bi *a, const bi *b) { bitop(r, a, b, '|'); }
+void bi_xor(bi *r, const bi *a, const bi *b) { bitop(r, a, b, '^'); }
+
 int bi_bits(const bi *x)
 {
     if (x->n == 0) return 0;
@@ -576,6 +626,7 @@ static const struct { const char *name; int ary; } OPS[] = {
     { "dec", 1 }, { "neg", 1 }, { "cmp", 2 }, { "add", 2 }, { "sub", 2 }, { "abs", 1 }, { "mul", 2 },
     { "divf", 2 }, { "mod", 2 }, { "divmod", 2 },
     { "shl", 2 }, { "shr", 2 },
+    { "and", 2 }, { "or", 2 }, { "xor", 2 },
 };
 
 /* Decimal output cannot reveal an unnormalised result: bi_to_dec divides the
@@ -672,6 +723,10 @@ int main(void)
             int e = bi_shr(&r, &a, &b);
             if (e) fail(e); else emit(&r);
         }
+        else if (!strcmp(op, "and")) { bi_and(&r, &a, &b); emit(&r); }
+        else if (!strcmp(op, "or"))  { bi_or(&r, &a, &b);  emit(&r); }
+        else if (!strcmp(op, "xor")) { bi_xor(&r, &a, &b); emit(&r); }
+
 
 
 
