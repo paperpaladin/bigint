@@ -78,8 +78,10 @@ def ev(op, args):
     except ValueError:
         return "E parse"
 
-    if op == "dec":
+    if op in ("dec", "hexrt"):
         return str(vals[0])
+    if op == "hex":
+        return hex(vals[0])
     if op == "neg":
         return str(-vals[0])
     if op == "add":
@@ -123,14 +125,32 @@ def ev(op, args):
 
 ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2,
          "mul": 2, "divf": 2, "mod": 2, "divmod": 2,
-         "shl": 2, "shr": 2, "and": 2, "or": 2, "xor": 2}
+         "shl": 2, "shr": 2, "and": 2, "or": 2, "xor": 2,
+         "hex": 1, "hexrt": 1, "unhex": 1}
 OPS = list(ARITY)
+
+
+def rand_hexlit(rnd):
+    """A hex literal in one of the spellings Python's int(s, 16) accepts."""
+    v = rand_val(rnd)
+    s = format(abs(v), "x")
+    if rnd.random() < 0.3:
+        s = s.upper()
+    if rnd.random() < 0.3:
+        s = "0" * rnd.randint(1, 5) + s
+    if rnd.random() < 0.5:
+        s = ("0X" if rnd.random() < 0.3 else "0x") + s
+    if v < 0:
+        return "-" + s
+    return ("+" + s) if rnd.random() < 0.1 else s
 
 
 def gen(rnd):
     op = rnd.choice(OPS)
     if op in ("shl", "shr"):
         return op, [str(rand_val(rnd)), str(rand_shift(rnd))]
+    if op == "unhex":
+        return op, [rand_hexlit(rnd)]
     return op, [str(rand_val(rnd)) for _ in range(ARITY[op])]
 
 
@@ -231,6 +251,20 @@ CORPUS = [
     # the sign extension has to run the whole way up.
     ("and", ["-3", str(2**16000 - 1)]), ("or", ["-3", str(2**16000 - 1)]),
     ("xor", ["-3", str(2**16000 - 1)]), ("and", [str(2**16000 - 1), "-3"]),
+    # Hex round trips at every length that crosses a nibble or limb edge.
+    ("hex", ["0"]), ("hex", ["-1"]), ("hex", ["15"]), ("hex", ["16"]),
+    ("hex", ["255"]), ("hex", ["4294967295"]), ("hex", ["4294967296"]),
+    ("hex", ["-4294967296"]), ("hex", ["18446744073709551615"]),
+    ("hex", [str(2**16000 - 1)]), ("hex", [str(-(2**16000))]),
+    ("unhex", ["0"]), ("unhex", ["0x0"]), ("unhex", ["-0x0"]),
+    ("unhex", ["0X1F"]), ("unhex", ["1f"]), ("unhex", ["0000001f"]),
+    ("unhex", ["+0xff"]), ("unhex", ["-0xFF"]),
+    ("unhex", ["f" * 8]), ("unhex", ["f" * 9]), ("unhex", ["1" + "0" * 8]),
+    ("unhex", [""]), ("unhex", ["0x"]), ("unhex", ["-"]), ("unhex", ["0xg"]),
+    ("unhex", ["zz"]), ("unhex", ["12 34"]),
+] + [("hexrt", [str((-1) ** k * (2**k - 1))]) for k in range(0, 300)] + [
+    ("hexrt", ["0"]), ("hexrt", [str(2**16000 - 1)]),
+
 
 
 
