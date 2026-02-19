@@ -82,7 +82,13 @@ void bi_and(bi *r, const bi *a, const bi *b);
 void bi_or (bi *r, const bi *a, const bi *b);
 void bi_xor(bi *r, const bi *a, const bi *b);
 
+/* a ** e. 0 ** 0 is 1, as in Python. A negative exponent is BI_ENEGPOW
+ * rather than Python's float result, and a result wider than BI_MAX_BITS is
+ * BI_ETOOBIG. */
+int bi_pow(bi *r, const bi *a, const bi *e);
+
 int bi_bits(const bi *x);   /* bit length of |x|; 0 for zero, as Python */
+
 
 
 

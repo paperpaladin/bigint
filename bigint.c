@@ -599,6 +599,47 @@ void bi_abs(bi *r, const bi *a)
     if (r->sign < 0) r->sign = 1;
 }
 
+/* a ** e by binary exponentiation. Python's rules: 0 ** 0 is 1, and a
+ * negative exponent is an error here rather than Python's float result --
+ * this is an integer library, and returning 0 for 2 ** -1 would be worse
+ * than refusing.
+ *
+ * The size check is an exact upper bound: the result cannot exceed
+ * bits(a) * e bits. Values with bits(a) <= 1 are exactly 0, 1 and -1, whose
+ * powers are bounded whatever the exponent, so they are answered before the
+ * check and 1 ** (10**30) costs nothing. */
+int bi_pow(bi *r, const bi *a, const bi *e)
+{
+    bi acc, base;
+    uint64_t ee;
+    int ab = bi_bits(a);
+
+    if (e->sign < 0) return BI_ENEGPOW;
+    if (ab <= 1) {
+        int odd = e->n != 0 && (e->d[0] & 1);
+        bi_set_i64(r, a->sign == 0 ? (e->n == 0 ? 1 : 0)
+                                   : (a->sign > 0 || !odd) ? 1 : -1);
+        return BI_OK;
+    }
+    if (e->n > 1) return BI_ETOOBIG;       /* ab >= 2 and e >= 2^32 */
+    ee = e->n ? e->d[0] : 0;
+    if ((uint64_t)ab * ee > BI_MAX_BITS) return BI_ETOOBIG;
+
+    bi_init(&acc);
+    bi_init(&base);
+    bi_set_i64(&acc, 1);
+    bi_copy(&base, a);
+    while (ee) {
+        if (ee & 1) bi_mul(&acc, &acc, &base);
+        ee >>= 1;
+        if (ee) bi_mul(&base, &base, &base);
+    }
+    bi_swap(r, &acc);
+    bi_free(&acc);
+    bi_free(&base);
+    return BI_OK;
+}
+
 static int hexval(char c)
 {
     if (c >= '0' && c <= '9') return c - '0';
@@ -685,6 +726,7 @@ static const struct { const char *name; int ary; int hexin; } OPS[] = {
     { "shl", 2, 0 }, { "shr", 2, 0 },
     { "and", 2, 0 }, { "or", 2, 0 }, { "xor", 2, 0 },
     { "hex", 1, 0 }, { "hexrt", 1, 0 }, { "unhex", 1, 1 },
+    { "pow", 2, 0 },
 };
 
 /* Decimal output cannot reveal an unnormalised result: bi_to_dec divides the
@@ -790,6 +832,11 @@ int main(void)
         else if (!strcmp(op, "or"))  { bi_or(&r, &a, &b);  emit(&r); }
         else if (!strcmp(op, "xor")) { bi_xor(&r, &a, &b); emit(&r); }
         else if (!strcmp(op, "unhex")) emit(&a);
+        else if (!strcmp(op, "pow")) {
+            int e2 = bi_pow(&r, &a, &b);
+            if (e2) fail(e2); else emit(&r);
+        }
+
         else if (!strcmp(op, "hex")) {
             char *s = bi_to_hex(&a);
             puts(s);
