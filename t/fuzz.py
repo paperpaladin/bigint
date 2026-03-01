@@ -40,6 +40,19 @@ SHIFT_EDGES = [0, 1, 31, 32, 33, 63, 64, 65, 95, 96, 127, 128,
 
 
 
+# ---------------------------------------------------------------------------
+# Fuzz case class: values sitting exactly on a limb boundary.
+#
+# A uniformly random 64-bit value is nowhere near 2^64, and the limb-count
+# and carry logic only changes behaviour within one of a boundary. These are
+# the values where "did this need an extra limb" is decided.
+EDGES = sorted({2**k + d
+                for k in (1, 15, 16, 31, 32, 33, 63, 64, 65, 95, 96, 127,
+                          128, 159, 160, 255, 256, 511, 512, 1023, 1024,
+                          15999, 16000, 16001)
+                for d in (-1, 0, 1)})
+
+
 def from_bucket(rnd, bucket):
     lo, hi = bucket
     bits = rnd.randint(lo, hi)
@@ -53,6 +66,8 @@ def signed(rnd, v):
 
 
 def rand_val(rnd):
+    if rnd.random() < 0.18:
+        return signed(rnd, rnd.choice(EDGES))
     return signed(rnd, from_bucket(rnd, rnd.choices(BUCKETS, WEIGHTS)[0]))
 
 
@@ -71,6 +86,11 @@ def rand_pair(rnd):
         if rnd.random() < 0.5:
             pair.reverse()
         return pair
+    if rnd.random() < 0.12:
+        # Both operands on limb boundaries, so their sum or difference lands
+        # on one too: (2^64 - 1) + 1, 2^64 - (2^64 - 1), and so on.
+        return [signed(rnd, rnd.choice(EDGES)), signed(rnd, rnd.choice(EDGES))]
+
     return [rand_val(rnd), rand_val(rnd)]
 
 
