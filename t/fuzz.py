@@ -53,6 +53,19 @@ EDGES = sorted({2**k + d
                 for d in (-1, 0, 1)})
 
 
+# ---------------------------------------------------------------------------
+# Fuzz case class: carry and borrow chains that run the whole number.
+#
+# 999...9 + 1 propagates a carry through every limb and then grows by one.
+# 1000...0 - 1 borrows through every limb and then shrinks. All-ones in binary
+# (2^b - 1) is the same thing at limb granularity: every limb is 0xffffffff,
+# so every single-limb addition carries.
+CHAINS = sorted({v for k in (1, 2, 3, 9, 10, 19, 20, 21, 30, 100, 300,
+                             1000, 2000, 4800)
+                 for v in (10**k - 1, 10**k)} |
+                {2**b - 1 for b in (32, 64, 96, 128, 256, 1024, 4096, 16000)})
+
+
 def from_bucket(rnd, bucket):
     lo, hi = bucket
     bits = rnd.randint(lo, hi)
@@ -90,6 +103,15 @@ def rand_pair(rnd):
         # Both operands on limb boundaries, so their sum or difference lands
         # on one too: (2^64 - 1) + 1, 2^64 - (2^64 - 1), and so on.
         return [signed(rnd, rnd.choice(EDGES)), signed(rnd, rnd.choice(EDGES))]
+    if rnd.random() < 0.15:
+        # A full-length carry or borrow chain against a tiny operand, which
+        # is the arrangement that makes the chain actually propagate.
+        pair = [signed(rnd, rnd.choice(CHAINS)),
+                signed(rnd, rnd.randint(1, 3))]
+        if rnd.random() < 0.4:
+            pair.reverse()
+        return pair
+
 
     return [rand_val(rnd), rand_val(rnd)]
 
