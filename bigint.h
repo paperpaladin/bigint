@@ -26,6 +26,17 @@ typedef uint32_t bi_limb;
  * let malloc fail, if anyone ever wants bigger. */
 #define BI_MAX_BITS   (1u << 24)
 
+/* Limb count at which bi_mul switches from schoolbook to Karatsuba.
+ * Measured, not guessed: see `make bench` and the table in the README. A
+ * single Karatsuba level breaks even near 32 limbs, but the best cutoff for
+ * the recursive version is three times that, because every level costs six
+ * malloc/free pairs for its temporaries.
+ * shortcut: a scratch arena threaded through the recursion would push the
+ * cutoff back down toward the 32-limb break-even. */
+#define BI_KARATSUBA_CUTOFF 96
+
+
+
 /* Normalised at all times: n == 0 || d[n-1] != 0, and sign == 0 iff n == 0.
  * An unnormalised value with leading zero limbs compares unequal to the same
  * number normalised, so every mutating path ends in norm(). */
@@ -60,7 +71,13 @@ int bi_cmp(const bi *a, const bi *b);
 /* r may alias either operand. */
 void bi_add(bi *r, const bi *a, const bi *b);
 void bi_sub(bi *r, const bi *a, const bi *b);
+/* bi_mul picks schoolbook or Karatsuba by operand size. The other two force
+ * one path, which is what lets t/fuzz.py differential-test them against each
+ * other as well as against Python: two independent implementations of the
+ * same function are a second oracle, and a cheaper one. */
 void bi_mul(bi *r, const bi *a, const bi *b);
+void bi_mul_school(bi *r, const bi *a, const bi *b);
+void bi_mul_karatsuba(bi *r, const bi *a, const bi *b);
 
 /* Floor division and modulo with PYTHON's semantics, not C's: the quotient
  * rounds toward negative infinity and the remainder takes the sign of the

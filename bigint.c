@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "bigint.h"
 
@@ -189,11 +190,13 @@ static void uadd(bi *r, const bi *a, const bi *b)
     }
     r->d[i] = (bi_limb)carry;      /* the one extra limb, usually zero */
     r->n = hi->n + 1;
+    norm(r);
 }
 
 /* |r| = |a| - |b|, and |a| >= |b| is the caller's problem. r must not alias.
  * The result can be many limbs shorter than a (999...9 - 999...8), so the
- * norm() at the end is not optional. */
+ * trailing norm() is not optional: leaving leading zero limbs in place would
+ * make the answer print correctly and compare wrong. */
 static void usub(bi *r, const bi *a, const bi *b)
 {
     int64_t borrow = 0;
@@ -206,6 +209,7 @@ static void usub(bi *r, const bi *a, const bi *b)
         r->d[i] = (bi_limb)t;
     }
     r->n = a->n;
+    norm(r);
 }
 
 /* shortcut: every binary op builds its answer in a fresh temp and swaps it
@@ -255,16 +259,120 @@ static void umul_school(bi *r, const bi *a, const bi *b)
     r->n = a->n + b->n;
 }
 
-void bi_mul(bi *r, const bi *a, const bi *b)
+/* r += |x| << (32 * off), with the carry allowed to run past x. */
+static void addat(bi *r, const bi *x, int off)
+{
+    uint64_t carry = 0;
+    int i;
+
+    for (i = 0; i < x->n; i++) {
+        carry += (uint64_t)r->d[off + i] + x->d[i];
+        r->d[off + i] = (bi_limb)carry;
+        carry >>= 32;
+    }
+    for (i = off + x->n; carry; i++) {
+        carry += r->d[i];
+        r->d[i] = (bi_limb)carry;
+        carry >>= 32;
+    }
+}
+
+/* A read-only window onto limbs [off, off+len) of x, as a normalised bi.
+ * Nothing may write through it -- no grow(), no realloc -- which is why it
+ * is only ever passed to uadd, usub and umul_rec as an input. */
+static bi window(const bi *x, int off, int len)
+{
+    bi v;
+    v.d = x->d + (off < x->n ? off : x->n);
+    v.cap = 0;
+    v.n = off < x->n ? (len < x->n - off ? len : x->n - off) : 0;
+    while (v.n > 0 && v.d[v.n - 1] == 0) v.n--;
+    v.sign = v.n ? 1 : 0;
+    return v;
+}
+
+static void umul_rec(bi *r, const bi *a, const bi *b, int cutoff);
+
+/* Karatsuba: three half-size multiplications instead of four.
+ *
+ *   a = a1*B^h + a0,  b = b1*B^h + b0
+ *   z0 = a0*b0,  z2 = a1*b1,  z1 = (a0+a1)*(b0+b1) - z0 - z2
+ *   a*b = z2*B^2h + z1*B^h + z0
+ *
+ * h is half of the SHORTER operand, which keeps h >= 1 and h < min(na, nb)
+ * for any operands at or above the cutoff; the halves can then be wildly
+ * unbalanced, and the recursion simply re-splits on the new shorter one. */
+static void umul_karatsuba(bi *r, const bi *a, const bi *b, int cutoff)
+{
+    int h = (a->n < b->n ? a->n : b->n) / 2;
+    int n = a->n + b->n;
+    bi a0 = window(a, 0, h), a1 = window(a, h, a->n - h);
+    bi b0 = window(b, 0, h), b1 = window(b, h, b->n - h);
+    bi z0, z1, z2, sa, sb, t;
+
+    bi_init(&z0); bi_init(&z1); bi_init(&z2);
+    bi_init(&sa); bi_init(&sb); bi_init(&t);
+
+    umul_rec(&z0, &a0, &b0, cutoff);
+    umul_rec(&z2, &a1, &b1, cutoff);
+    uadd(&sa, &a0, &a1);
+    uadd(&sb, &b0, &b1);
+    umul_rec(&z1, &sa, &sb, cutoff);
+    usub(&t, &z1, &z0); bi_swap(&z1, &t);      /* z1 -= z0 */
+    usub(&t, &z1, &z2); bi_swap(&z1, &t);      /* z1 -= z2 */
+
+    /* z1 occupies at most 2h+2 limbs at offset h, so the top index it can
+     * reach is 3h+1, and n >= 4h; one spare limb covers the final carry. */
+    grow(r, n + 1);
+    memset(r->d, 0, (size_t)(n + 1) * sizeof *r->d);
+    r->n = n;
+    r->sign = 1;
+    addat(r, &z0, 0);
+    addat(r, &z1, h);
+    addat(r, &z2, 2 * h);
+    norm(r);
+
+    bi_free(&z0); bi_free(&z1); bi_free(&z2);
+    bi_free(&sa); bi_free(&sb); bi_free(&t);
+}
+
+static void umul_rec(bi *r, const bi *a, const bi *b, int cutoff)
+{
+    if (a->n == 0 || b->n == 0) { bi_set_zero(r); return; }
+    if (a->n < cutoff || b->n < cutoff) { umul_school(r, a, b); return; }
+    umul_karatsuba(r, a, b, cutoff);
+}
+
+static void mul_signed(bi *r, const bi *a, const bi *b, int cutoff)
 {
     bi t;
     bi_init(&t);
-    umul_school(&t, a, b);
+    if (cutoff <= 0) umul_school(&t, a, b);
+    else umul_rec(&t, a, b, cutoff < 2 ? 2 : cutoff);
     t.sign = a->sign * b->sign;
     norm(&t);
     bi_swap(r, &t);
     bi_free(&t);
 }
+
+void bi_mul(bi *r, const bi *a, const bi *b)
+{
+    mul_signed(r, a, b, BI_KARATSUBA_CUTOFF);
+}
+
+void bi_mul_school(bi *r, const bi *a, const bi *b)
+{
+    mul_signed(r, a, b, 0);
+}
+
+/* Karatsuba all the way down to 2 limbs. Not what bi_mul does -- it is
+ * slower -- but it maximises the amount of Karatsuba code the differential
+ * fuzzer gets to disagree with the schoolbook path about. */
+void bi_mul_karatsuba(bi *r, const bi *a, const bi *b)
+{
+    mul_signed(r, a, b, 2);
+}
+
 
 static int nlz32(bi_limb x)
 {
@@ -706,7 +814,7 @@ static int split(char *line, char *arg[3])
 {
     int n = 0;
     char *p = line;
-    while (*p && n < 3) {
+    while (*p && n < 5) {
         while (*p == ' ' || *p == '\t') p++;
         if (!*p) break;
         arg[n++] = p;
@@ -726,7 +834,7 @@ static const struct { const char *name; int ary; int hexin; } OPS[] = {
     { "shl", 2, 0 }, { "shr", 2, 0 },
     { "and", 2, 0 }, { "or", 2, 0 }, { "xor", 2, 0 },
     { "hex", 1, 0 }, { "hexrt", 1, 0 }, { "unhex", 1, 1 },
-    { "pow", 2, 0 },
+    { "pow", 2, 0 }, { "mulsb", 2, 0 }, { "mulk", 2, 0 },
 };
 
 /* Decimal output cannot reveal an unnormalised result: bi_to_dec divides the
@@ -748,6 +856,45 @@ static void emit(const bi *x)
     s = bi_to_dec(x);
     puts(s);
     free(s);
+}
+
+/* Where does Karatsuba start paying? Measured rather than asserted; the
+ * BI_KARATSUBA_CUTOFF in bigint.h comes from this table. Operands are
+ * pseudo-random with the top bit set, so every limb counts. */
+static void mulbench(int n, int reps, int cutoff)
+{
+    uint64_t st = 0x2545f4914f6cdd1dULL;
+    bi a, b, r;
+    clock_t t0;
+    double ms_s, ms_k;
+    int i, j;
+
+    if (n < 1) return;
+    if (reps <= 0) reps = 40000000 / (n * n) + 20;
+
+    bi_init(&a); bi_init(&b); bi_init(&r);
+    for (j = 0; j < 2; j++) {
+        bi *x = j ? &b : &a;
+        grow(x, n);
+        for (i = 0; i < n; i++) {
+            st ^= st << 13; st ^= st >> 7; st ^= st << 17;
+            x->d[i] = (bi_limb)st;
+        }
+        x->d[n - 1] |= 0x80000000u;
+        x->n = n;
+        x->sign = 1;
+    }
+
+    t0 = clock();
+    for (i = 0; i < reps; i++) bi_mul_school(&r, &a, &b);
+    ms_s = (double)(clock() - t0) * 1000.0 / CLOCKS_PER_SEC / reps;
+    t0 = clock();
+    for (i = 0; i < reps; i++) mul_signed(&r, &a, &b, cutoff);
+    ms_k = (double)(clock() - t0) * 1000.0 / CLOCKS_PER_SEC / reps;
+
+    printf("%6d  %11.5f  %11.5f  %s\n", n, ms_s, ms_k,
+           ms_k < ms_s ? "karatsuba" : "schoolbook");
+    bi_free(&a); bi_free(&b); bi_free(&r);
 }
 
 static int fail(int e)
@@ -783,7 +930,7 @@ int main(void)
     bi_init(&r);
     bi_init(&r2);
     while ((len = getline(&line, &cap, stdin)) > 0) {
-        char *arg[4];
+        char *arg[5];
         int n, i, ary = -1, hexin = 0;
         const char *op;
 
@@ -792,6 +939,15 @@ int main(void)
         n = split(line, arg);
         if (n == 0) continue;
         op = arg[0];
+        if (n >= 3 && !strcmp(op, "mulbench")) {
+            int c = n > 3 ? atoi(arg[3]) : 0;
+            mulbench(atoi(arg[1]), atoi(arg[2]),
+                     c > 0 ? c : BI_KARATSUBA_CUTOFF);
+            continue;
+        }
+
+
+
 
         for (i = 0; i < (int)(sizeof OPS / sizeof *OPS); i++)
             if (!strcmp(op, OPS[i].name)) {
@@ -812,6 +968,9 @@ int main(void)
         else if (!strcmp(op, "sub")) { bi_sub(&r, &a, &b); emit(&r); }
         else if (!strcmp(op, "abs")) { bi_abs(&r, &a); emit(&r); }
         else if (!strcmp(op, "mul")) { bi_mul(&r, &a, &b); emit(&r); }
+        else if (!strcmp(op, "mulsb")) { bi_mul_school(&r, &a, &b); emit(&r); }
+        else if (!strcmp(op, "mulk")) { bi_mul_karatsuba(&r, &a, &b); emit(&r); }
+
         else if (!strcmp(op, "divf")) {
             int e = bi_divmod(&r, NULL, &a, &b);
             if (e) fail(e); else emit(&r);
