@@ -257,7 +257,12 @@ static void umul_school(bi *r, const bi *a, const bi *b)
         r->d[i + b->n] = (bi_limb)carry;
     }
     r->n = a->n + b->n;
+    /* Not optional, even though every public caller normalises afterwards:
+     * Karatsuba consumes these results directly, so a leading zero limb here
+     * is a leading zero limb inside z0, z1 and z2. */
+    norm(r);
 }
+
 
 /* r += |x| << (32 * off), with the carry allowed to run past x. */
 static void addat(bi *r, const bi *x, int off)

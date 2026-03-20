@@ -435,6 +435,51 @@ def sign_matrix():
     return cases
 
 
+# ---------------------------------------------------------------------------
+# Fuzz case class: every pair of limb lengths, for all three multiply paths.
+#
+# Karatsuba's split is at half the shorter operand, so the behaviour depends
+# on both lengths and on their parity, and unbalanced pairs are where a
+# bignum multiply usually breaks. This enumerates the pairs rather than
+# hoping to sample them, and runs each through schoolbook, Karatsuba and the
+# dispatching bi_mul, so the two implementations are checked against each
+# other on identical operands as well as against Python.
+
+def limbs(rnd, n, dense):
+    """An n-limb value whose top limb is either full (dense) or exactly 1.
+
+    The top-limb style matters more than it looks. Forcing the top bit set,
+    which is the obvious way to pin a limb count, makes every partial product
+    wide -- so a Karatsuba term that is one limb short of what the code
+    assumes can never occur, and a dropped z2 subtraction goes unnoticed. A
+    top limb of 1 is the opposite extreme and makes those terms as short as
+    they can be.
+    """
+    v = rnd.getrandbits(32 * n)
+    if dense:
+        return v | (1 << (32 * n - 1))
+    return (v & ((1 << (32 * (n - 1))) - 1)) | (1 << (32 * (n - 1)))
+
+
+def length_matrix(rnd):
+    lens = list(range(1, 17)) + [95, 96, 97, 191, 192, 193]
+    cases = []
+    for na in lens:
+        for nb in lens:
+            if (na > 16 or nb > 16) and na != nb and {na, nb} != {96, 192}:
+                continue            # keep the expensive corner small
+            for da in (True, False):
+                for db in (True, False):
+                    a = limbs(rnd, na, da)
+                    b = limbs(rnd, nb, db)
+                    for sa, sb in ((1, 1), (1, -1)):
+                        args = [str(sa * a), str(sb * b)]
+                        for op in ("mul", "mulsb", "mulk"):
+                            cases.append((op, args))
+    return cases
+
+
+
 def run_chunk(cases):
     """cases: list of (op, args). Returns (agree, failures)."""
     lines = []
@@ -466,7 +511,9 @@ def main():
     failures = []
 
     # The fixed corpus first: boundaries, degenerate inputs, past regressions.
-    for name, batch in (("corpus", CORPUS), ("signs", sign_matrix())):
+    for name, batch in (("corpus", CORPUS), ("signs", sign_matrix()),
+                        ("lengths", length_matrix(rnd))):
+
         a, f = run_chunk(batch)
         agree += a
         disagree += len(f)
