@@ -1,4 +1,4 @@
-# bigint -- plan
+# bigint: plan
 
 ## Contract
 
@@ -8,16 +8,16 @@ modulo, power, comparison, shifts, bitwise and/or/xor, negation, absolute
 value, and conversion to and from decimal and hexadecimal strings.
 
 For every one of those, `bigint` must produce exactly what Python produces,
-byte for byte on the string forms. Where C and Python differ -- floor division
+byte for byte on the string forms. Where C and Python differ, floor division
 and modulo signs, shifts of negative values, bitwise operations on negative
-values -- **Python wins**, because Python is the oracle and an oracle you
+values, **Python wins**, because Python is the oracle and an oracle you
 overrule is not an oracle.
 
-The two deliberate deviations from Python are both errors rather than wrong
+The two deliberate deviations from Python are both errors, not wrong
 answers, and both are in `bigint.h`: a negative exponent is refused instead of
 returning a float, and a shift or power whose result would exceed
 `BI_MAX_BITS` is refused instead of attempted. `t/fuzz.py` models both rules,
-so they are tested rather than merely documented.
+so they are tested, not merely documented.
 
 ## Hard invariant
 
@@ -28,34 +28,34 @@ This is the one property that, if violated, means the project failed, and it
 is the one Python cannot check. `bi_to_dec` divides the value down and never
 looks at leading zero limbs, so an untrimmed result prints identically to a
 trimmed one and a million-case differential run reports zero disagreements.
-The only observer is `bi_cmp`, which compares limb counts first -- so the bug
+The only observer is `bi_cmp`, which compares limb counts first, so the bug
 sits silently until some unrelated comparison returns the wrong answer months
 later.
 
 So the invariant is asserted directly, not inferred: the driver checks it on
 every result of every case the fuzzer runs. That check has already earned its
-place twice -- once when deleting `norm()`'s trim loop was confirmed to make
-`10^500 - (10^500 - 1)` report "E unnormalised" rather than passing, and once
+place twice, once when deleting `norm()`'s trim loop was confirmed to make
+`10^500 - (10^500 - 1)` report "E unnormalised" instead of passing, and once
 when `umul_school` was found returning unnormalised products that disarmed a
 fault injection (commit 16).
 
 ## Oracle
 
-1. **Python's native `int`**, via `t/fuzz.py`. It is arbitrary-precision, it
+1. Python's native `int`, via `t/fuzz.py`. It is arbitrary-precision, it
    is the reference implementation for every operation here, and there is zero
    ambiguity about the right answer. Nothing about it is under this project's
    control. Currently 7,314,868 cases across 68 seeds, zero disagreements.
 
-2. **Schoolbook multiply against Karatsuba multiply.** Two independent
+2. Schoolbook multiply against Karatsuba multiply. Two independent
    implementations of one function, checked against each other on identical
-   operands as well as against Python. Weaker than Python -- a shared
-   misunderstanding would agree -- but far cheaper, so every `mul` case runs
+   operands as well as against Python. Weaker than Python: a shared
+   misunderstanding would agree, but far cheaper, so every `mul` case runs
    through both.
-3. **ASan and UBSan**, via `make test-asan`. A bignum indexes limb arrays
+3. ASan and UBSan, via `make test-asan`. A bignum indexes limb arrays
    constantly, `addat()` writes past the end of its operand by design, and the
    Karatsuba windows alias the parent's buffer; UBSan also covers the shift
    widths, where `>> (32 - s)` with `s == 0` would be undefined in 32 bits.
-4. **`../unrepro`** for build reproducibility. Verified REPRODUCIBLE across
+4. `../unrepro` for build reproducibility. Verified REPRODUCIBLE across
    varied build directory, TZ, locale, umask, hostname, user and
    `SOURCE_DATE_EPOCH`.
 
@@ -67,7 +67,7 @@ to or from floating point. Bitwise NOT as a named operation (`~x` is
 `-x - 1`, and the library has both).
 
 Subquadratic base conversion, Toom-Cook or FFT multiplication, and
-Burnikel-Ziegler division are **not** permanent non-goals, but they are not
+Burnikel-Ziegler division are not permanent non-goals, but they are not
 queued either: nothing here needs them, and each one is a second
 implementation that has to be differential-tested against the first.
 
@@ -113,19 +113,19 @@ function's output is its arguments.
            1-in-120 event
 - [x] 12 fuzz class: values exactly on the limb boundaries
 - [x] 13 fuzz class: carry and borrow chains the full length of the number
-      why: the arrangement matters as much as the value -- a chain operand
+      why: the arrangement matters as much as the value: a chain operand
            against another big number does not propagate anything
 - [x] 14 Karatsuba, with the schoolbook path kept and benchmarked
       proves: 3.7x at 4096 limbs; cutoff 96 measured, not guessed
 - [x] 15 fuzz class: every pair of limb lengths, all three multiply paths
       found: `umul_school` never normalised its own result, so a
              1-limb-by-1-limb product came back with a leading zero limb.
-             Invisible from outside the library -- but it silently disarmed a
+             Invisible from outside the library, but it silently disarmed a
              fault injection into Karatsuba's z2 subtraction, which is the
              "suite passes because it is doing nothing" failure mode.
 - [x] 16 README and PLAN
 
-### Milestone 1 -- make the oracle harder to satisfy
+### Milestone 1: make the oracle harder to satisfy
 
 - [ ] 17 shrink on disagreement: minimise both operands before printing them
       why: the first real disagreement at a 500-limb magnitude will otherwise
@@ -147,7 +147,7 @@ function's output is its arguments.
       why: the current check only sees results, so an unnormalised value that
            is produced and consumed internally is still invisible
 
-### Milestone 2 -- the operations that need a second implementation
+### Milestone 2: the operations that need a second implementation
 
 - [ ] 21 three-argument `pow(a, e, m)` by square-and-multiply with reduction
       at every step, differential against Python's `pow(a, e, m)`
@@ -159,7 +159,7 @@ function's output is its arguments.
             already has", which is the cheapest kind of work here: the oracle
             is free and exact.
 
-### Milestone 3 -- asymptotics
+### Milestone 3: asymptotics
 
 - [ ] 24 subquadratic base conversion by recursive splitting on powers of 10,
       keeping the quadratic path and differential-testing the two against
@@ -174,7 +174,7 @@ function's output is its arguments.
 - [ ] 26 Burnikel-Ziegler division, keeping Knuth D as the fallback and the
       differential partner
 - [ ] 27 benchmark against GMP, reporting where we lose and by how much
-      note: GMP as a BENCHMARK is fine. GMP as a dependency is not -- writing
+      note: GMP as a BENCHMARK is fine. GMP as a dependency is not, writing
             this is the point.
 
 ## Open questions
@@ -183,7 +183,7 @@ function's output is its arguments.
   inputs Python accepts, which is a real deviation, and the alternative is
   letting `malloc` fail and aborting. The current answer is that refusing is
   more useful than dying, but it does mean `t/fuzz.py` has to model a rule
-  that belongs to the implementation rather than to arithmetic.
+  that belongs to the implementation, not to arithmetic.
 - Whether to expose the quotient and remainder separately at all, given that
   `bi_divmod` computes both and callers mostly want one. Passing NULL works
   but costs a branch in the hot loop.
