@@ -121,7 +121,7 @@ function's output is its arguments.
       found: `umul_school` never normalised its own result, so a
              1-limb-by-1-limb product came back with a leading zero limb.
              Invisible from outside the library, but it silently disarmed a
-             fault injection into Karatsuba's z2 subtraction, which is the
+             fault injection into Karatsuba's z2 subtraction, the
              "suite passes because it is doing nothing" failure mode.
 - [x] 16 README and PLAN
 
@@ -156,7 +156,7 @@ function's output is its arguments.
 - [ ] 22 `bi_gcd` by binary GCD, against `math.gcd`
 - [ ] 23 `bi_isqrt` by Newton iteration, against `math.isqrt`
       note: 21 to 23 are all "second implementation of something Python
-            already has", which is the cheapest kind of work here: the oracle
+            already has", the cheapest kind of work here: the oracle
             is free and exact.
 
 ### Milestone 3: asymptotics
@@ -180,7 +180,7 @@ function's output is its arguments.
 ## Open questions
 
 - Whether `BI_MAX_BITS` should exist at all. It makes two operations refuse
-  inputs Python accepts, which is a real deviation, and the alternative is
+  inputs Python accepts, a real deviation, and the alternative is
   letting `malloc` fail and aborting. The current answer is that refusing is
   more useful than dying, but it does mean `t/fuzz.py` has to model a rule
   that belongs to the implementation, not to arithmetic.
