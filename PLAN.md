@@ -17,7 +17,7 @@ The two deliberate deviations from Python are both errors, not wrong
 answers, and both are in `bigint.h`: a negative exponent is refused instead of
 returning a float, and a shift or power whose result would exceed
 `BI_MAX_BITS` is refused instead of attempted. `t/fuzz.py` models both rules,
-so they are tested, not merely documented.
+so they are tested as well as documented.
 
 ## Hard invariant
 
