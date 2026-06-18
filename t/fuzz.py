@@ -480,6 +480,189 @@ def length_matrix(rnd):
 
 
 
+# Operations whose second operand must not be shrunk to zero. Dividing by
+# zero disagrees for its own reasons, so a reducer that wanders into it
+# turns a real arithmetic bug into the trivial one and reports the wrong
+# thing. This is the slippage a reducer has to be stopped from doing.
+NONZERO_SECOND = ("divf", "mod", "divmod")
+
+
+BUDGET = 120
+
+
+def minimise_one(v, test, budget):
+    """Smallest magnitude at or below |v| that still satisfies test.
+
+    The search is over the BIT LENGTH, not over the value. The first
+    version binary-searched the value itself, which for a 16000-bit
+    operand is 16000 probes, each one a process, and it hung rather than
+    finished. Searching the length is 14 probes for the same operand.
+
+    Monotone predicates land on a power of two, so a linear walk down
+    from there finds the real boundary cheaply. A short candidate sweep
+    follows for the predicates that are not monotone, where the search
+    can step straight over the only failing value.
+
+    budget is a mutable one-element list of probes remaining. A reducer
+    with no budget is a reducer that hangs on the case you most want
+    reduced.
+    """
+    sign = -1 if v < 0 else 1
+    mag = abs(v)
+    if mag == 0:
+        return v
+
+    def ok(m):
+        if budget[0] <= 0:
+            return False
+        budget[0] -= 1
+        return test(sign * m)
+
+    # Fewest bits that still fails.
+    lo, hi = 0, mag.bit_length()
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if ok(mag >> (mag.bit_length() - mid) if mid else 0):
+            hi = mid
+        else:
+            lo = mid + 1
+    best = mag
+    cand = mag >> (mag.bit_length() - lo) if lo else 0
+    if cand < best and ok(cand):
+        best = cand
+
+    # Walk down from there while it keeps failing. This halts at a
+    # power-of-two boundary, so `floor` is the largest magnitude known NOT
+    # to fail and `best` the smallest known to.
+    floor = 0
+    while best > 0 and budget[0] > 0:
+        nxt = best // 2
+        if nxt < best and ok(nxt):
+            best = nxt
+        else:
+            floor = nxt
+            break
+
+    # Shapes before sizes, because shapes are cheap and bounded. Reducing
+    # the magnitude alone cannot minimise a carry bug: "add 1 X" only
+    # fails when X has its whole top limb set, and halving X clears that
+    # bit, so every smaller value passes and the search stops holding
+    # whatever large value it had. It stopped at 1207 digits for a case
+    # whose minimal form is ten. All-ones and power-of-two values at each
+    # limb boundary are where carry and borrow break.
+    for bits in range(32, best.bit_length() + 1, 32):
+        for c in ((1 << bits) - 1, 1 << bits, (1 << bits) + 1):
+            if 0 <= c < best and ok(c):
+                best = c
+                floor = 0
+                break
+        if best.bit_length() <= bits:
+            break
+
+    for c in (0, 1, 2, 10, best - 1, mag // 10):
+        if 0 <= c < best and ok(c):
+            best = c
+
+    # Then the real boundary, between the smallest failing value and the
+    # largest passing one. Only when that gap is narrow: between two
+    # 4000-bit numbers it is 4000 probes, which is how the first version
+    # spent its whole budget here and never reached the shapes above.
+    steps = 0
+    while floor + 1 < best and budget[0] > 0 and steps < 24:
+        mid = (floor + best) // 2
+        if ok(mid):
+            best = mid
+        else:
+            floor = mid
+        steps += 1
+
+    return sign * best
+
+
+def shrink(args, pred, skip_zero=()):
+    """Reduce each operand while pred still holds, to a fixpoint.
+
+    Greedy and one operand at a time, which is enough here: the operands
+    are independent magnitudes, so there is no pair that only fails
+    together in a way a per-operand pass cannot reach.
+
+    pred takes the full argument list. Everything returned has been
+    checked against it, so a reduced case always still fails. What it does
+    not promise is that it fails for the original reason, and that is why
+    the caller prints the case it started from as well.
+    """
+    cur = [int(a) for a in args]
+    budget = [BUDGET]
+    moved = True
+    while moved and budget[0] > 0:
+        moved = False
+        for i in range(len(cur)):
+            def test(v, i=i):
+                if v == 0 and i in skip_zero:
+                    return False
+                trial = list(cur)
+                trial[i] = v
+                return pred([str(x) for x in trial])
+            got = minimise_one(cur[i], test, budget)
+            if got != cur[i]:
+                cur[i] = got
+                moved = True
+    out = [str(x) for x in cur]
+    assert pred(out), "reducer returned a case that does not fail"
+    return out
+
+
+def disagrees(op, args):
+    """The predicate the reducer runs against: does this one case fail?"""
+    _, f = run_chunk([(op, list(args))])
+    return bool(f)
+
+
+def shrink_failure(op, args):
+    """Reduce a failing case, or return it unchanged if it will not shrink."""
+    skip = {1} if op in NONZERO_SECOND else set()
+    try:
+        return shrink(args, lambda a: disagrees(op, a), skip_zero=skip)
+    except AssertionError:
+        return list(args)
+
+
+def self_test():
+    """Exercise the reducer without needing a broken bigint.
+
+    The predicate is synthetic and monotone, so the answer is known
+    exactly: the smallest first operand at or above 1000 is 1000. A
+    reducer that merely gets smaller, which is the easy thing to write and
+    the useless thing to have, lands somewhere above it and fails here.
+    """
+    ok = 0
+    got = shrink(["987654321", "55555"], lambda a: int(a[0]) >= 1000)
+    assert got[0] == "1000", got
+    assert got[1] == "0", got
+    ok += 1
+
+    # Sign is part of the operand, so a reducer must not cross zero to
+    # find something smaller in absolute terms.
+    got = shrink(["-987654321", "1"], lambda a: int(a[0]) <= -1000)
+    assert got[0] == "-1000", got
+    ok += 1
+
+    # The divisor guard: the predicate here is satisfied by a zero second
+    # operand, and the reducer must refuse to go there anyway.
+    got = shrink(["12345", "678"], lambda a: True, skip_zero={1})
+    assert got[1] == "1", got
+    ok += 1
+
+    # A predicate that is not monotone: only one value fails, and the
+    # binary search walks past it. The candidate sweep is what catches it.
+    got = shrink(["10", "0"], lambda a: int(a[0]) in (10, 2))
+    assert got[0] == "2", got
+    ok += 1
+
+    print("%d reducer self-tests passed, 0 failed" % ok)
+    return 0
+
+
 def run_chunk(cases):
     """cases: list of (op, args). Returns (agree, failures)."""
     lines = []
@@ -503,6 +686,8 @@ def run_chunk(cases):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        return self_test()
     iters = int(sys.argv[1]) if len(sys.argv) > 1 else 100000
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     rnd = random.Random(seed)
@@ -537,6 +722,22 @@ def main():
     for where, line, want, have in failures[:20]:
         print("  %s\n    in:   %s\n    want: %s\n    got:  %s"
               % (where, line[:200], want[:200], have[:200]))
+        # A 500-limb operand is 4800 digits, which is why the line above
+        # is truncated and why that truncation makes it useless. Reduce
+        # the case and print the small one underneath.
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] in ARITY and parts[0] != "unhex":
+            small = shrink_failure(parts[0], parts[1:])
+            if small != parts[1:]:
+                line2 = " ".join([parts[0]] + small)
+                print("    reduced from %d characters to %d:"
+                      % (len(line), len(line2)))
+                print("      in:   %s" % line2)
+                print("      want: %s" % ev(parts[0], small)[:200])
+                print("      got:  %s" % (run_chunk([(parts[0], small)])[1]
+                                          or [("", "", "?")])[0][-1][:200])
+                print("    still fails, though not necessarily for the "
+                      "original reason: the line above is the one to trust.")
     if len(failures) > 20:
         print("  ... and %d more" % (len(failures) - 20))
     if disagree:
