@@ -167,12 +167,31 @@ function's output is its arguments.
             trust. The divisor guard exists for the same reason: a
             reduction that walks into division by zero turns a real
             arithmetic bug into the trivial one.
-- [ ] 18 feed the fuzzer's generated operands through the C parser as hex as
+- [x] 18 feed the fuzzer's generated operands through the C parser as hex as
       well as decimal, so parse and format are not trusted while arithmetic
       is being measured
       why: every case currently depends on `bi_set_dec` being correct. A
            parser bug that is symmetric with a formatter bug cancels out and
            the differential run stays green.
+      files: bigint.c t/fuzz.py
+      proves: a quarter of generated draws now run twice, once with decimal
+              operands and once with the same values written in hex,
+              against the same oracle answer. 14.8% of cases end up on the
+              hex path, across all 14 arithmetic and bitwise ops plus pow,
+              shl and shr.
+              With a decimal parser that drops the last digit past 40
+              digits: 1107 of 2515 decimal cases disagree and all 485 hex
+              twins pass, so the fault is localised to the parser rather
+              than appearing as a thousand arithmetic failures.
+              With the uadd carry mutant instead: both paths fail, 40 of
+              2515 and 9 of 485. A twin that only ever agreed would prove
+              nothing, and that is the check which says it does not.
+      found: the first design used a bare 0x prefix on an operand to mean
+             hex, and `dec 0x10` is a corpus case asserting that the
+             DECIMAL parser REJECTS a hex literal. Treating 0x as hex
+             everywhere turned that assertion into its opposite while
+             leaving it green. The marker is "hex:" for that reason, and
+             `dec 0x10` still returns E parse.
 - [ ] 19 wire valgrind into the Makefile alongside ASan, on a short seed
       why: ASan misses uninitialised reads, and `grow()` hands back
            uninitialised limbs with only `n` stopping them being read. A
