@@ -12,6 +12,7 @@ Usage: fuzz.py [CASES] [SEED]
 """
 import os
 import random
+import shlex
 import subprocess
 import sys
 
@@ -20,7 +21,10 @@ import sys
 # arithmetic.
 sys.set_int_max_str_digits(1000000)
 
-BIN = os.environ.get("BIGINT", "./bigint")
+# BIGINT may carry arguments, so that the whole suite can be run under a
+# wrapper: BIGINT="valgrind --quiet ./bigint" is how test-valgrind works.
+# A bare string would be execed as one filename with spaces in it.
+BIN = shlex.split(os.environ.get("BIGINT", "./bigint"))
 CHUNK = 20000
 
 # Magnitude buckets, in bits. The wide spread is deliberate: operands of
@@ -728,7 +732,7 @@ def run_chunk(cases):
     for op, args in cases:
         lines.append(" ".join([op] + list(args)))
     inp = "\n".join(lines) + "\n"
-    p = subprocess.run([BIN], input=inp, capture_output=True, text=True)
+    p = subprocess.run(BIN, input=inp, capture_output=True, text=True)
     got = p.stdout.splitlines()
     agree = 0
     failures = []
@@ -740,7 +744,11 @@ def run_chunk(cases):
         else:
             failures.append((lines[i], want, have))
     if p.returncode != 0:
-        failures.append(("<driver exit %d>" % p.returncode, "", p.stderr[-400:]))
+        # The whole tail, not 400 characters of it. Under valgrind this is
+        # the report, and a tail cut mid-word drops the line that names
+        # what went wrong: the first version of this printed "llocation".
+        failures.append(("<driver exit %d>" % p.returncode, "",
+                         p.stderr[-4000:]))
     return agree, failures
 
 
@@ -779,6 +787,13 @@ def main():
 
     print("%d agree, %d disagree" % (agree, disagree))
     for where, line, want, have in failures[:20]:
+        if line.startswith("<driver exit"):
+            # Not a wrong answer but a dead driver, so the want/got shape
+            # does not fit it. Print what the driver said instead.
+            print("  %s\n    %s" % (where, line))
+            for ln in have.rstrip().split("\n")[-25:]:
+                print("      %s" % ln)
+            continue
         print("  %s\n    in:   %s\n    want: %s\n    got:  %s"
               % (where, line[:200], want[:200], have[:200]))
         # A 500-limb operand is 4800 digits, which is why the line above
