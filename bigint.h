@@ -51,6 +51,16 @@ void bi_init(bi *x);
 void bi_free(bi *x);
 void bi_set_i64(bi *x, int64_t v);
 
+/* The hard invariant, as a predicate: 1 if x is normalised, 0 if not.
+ * Exported because no output of this library can reveal a violation --
+ * bi_to_dec and bi_to_hex both ignore leading zero limbs, so an untrimmed
+ * value prints exactly like a trimmed one and a differential test against
+ * any oracle stays green. Only bi_cmp notices, by which time the wrong
+ * answer is somewhere else entirely. A caller that wants the property
+ * checked has to ask for it; t/fuzz.py's driver asks on every operand it
+ * parses and every result it prints. */
+int bi_check(const bi *x);
+
 /* Returns 0 on success, -1 if s is not a valid decimal literal.
  * Accepts an optional leading sign. */
 int bi_set_dec(bi *x, const char *s);

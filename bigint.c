@@ -47,6 +47,19 @@ static void norm(bi *x)
     else if (x->sign == 0) x->sign = 1;
 }
 
+/* ...and the same invariant read back, for anyone who wants to assert it.
+ * Nothing this library prints can reveal a violation: bi_to_dec divides the
+ * value down and bi_to_hex starts at limb n-1, so both ignore leading zero
+ * limbs and an untrimmed value formats identically to a trimmed one. Only
+ * bi_cmp sees it, because it compares limb counts first, and by then the
+ * wrong answer has surfaced somewhere unrelated. */
+int bi_check(const bi *x)
+{
+    if (x->n < 0 || x->n > x->cap) return 0;
+    if (x->n == 0) return x->sign == 0;
+    return x->sign != 0 && x->d[x->n - 1] != 0;
+}
+
 static void bi_set_zero(bi *x) { x->n = 0; x->sign = 0; }
 
 void bi_set_i64(bi *x, int64_t v)
@@ -840,22 +853,10 @@ static const struct { const char *name; int ary; int hexin; } OPS[] = {
     { "pow", 2, 0 }, { "mulsb", 2, 0 }, { "mulk", 2, 0 },
 };
 
-/* Decimal output cannot reveal an unnormalised result: bi_to_dec divides the
- * value down and ignores leading zero limbs, so an untrimmed answer prints
- * identically to a trimmed one and the oracle sees nothing wrong. Only
- * bi_cmp notices, and by then the bug is months old. So the invariant is
- * checked here directly, on every result of every case the fuzzer runs. */
-static int normal(const bi *x)
-{
-    if (x->n < 0 || x->n > x->cap) return 0;
-    if (x->n == 0) return x->sign == 0;
-    return x->sign != 0 && x->d[x->n - 1] != 0;
-}
-
 static void emit(const bi *x)
 {
     char *s;
-    if (!normal(x)) { puts("E unnormalised"); return; }
+    if (!bi_check(x)) { puts("E unnormalised"); return; }
     s = bi_to_dec(x);
     puts(s);
     free(s);
@@ -911,7 +912,7 @@ static int fail(int e)
 static void emit2(const bi *x, const bi *y)
 {
     char *s1, *s2;
-    if (!normal(x) || !normal(y)) { puts("E unnormalised"); return; }
+    if (!bi_check(x) || !bi_check(y)) { puts("E unnormalised"); return; }
     s1 = bi_to_dec(x);
     s2 = bi_to_dec(y);
     printf("%s %s\n", s1, s2);
@@ -1002,6 +1003,17 @@ int main(void)
         }
         if (ary == 2 && set_operand(&b, arg[2], 0) != 0) {
             puts("E parse");
+            continue;
+        }
+        /* The operands too, not just the result. An unnormalised operand is
+         * consumed by arithmetic that normalises its own answer, so it comes
+         * back out correct: "add hex:0 5" prints 5 whether or not the zero
+         * that went in had a limb and a sign it should not have. The only
+         * operands any op ever prints back are the ones "dec" and "unhex"
+         * take, so every other parse was untested. Reported separately from
+         * a bad result, because which side is wrong is the whole question. */
+        if (!bi_check(&a) || (ary == 2 && !bi_check(&b))) {
+            puts("E unnormalised operand");
             continue;
         }
 

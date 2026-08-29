@@ -654,7 +654,17 @@ def shrink(args, pred, skip_zero=()):
     not promise is that it fails for the original reason, and that is why
     the caller prints the case it started from as well.
     """
-    cur = [int(a) for a in args]
+    # oper(), not int(): a hex-twin case carries "hex:" operands, and the
+    # first version of this called int() on them and died with a
+    # ValueError that took the whole report down with it. Candidates go
+    # back out in the spelling they came in with, so the reduced case
+    # still runs through the same parser as the one that failed.
+    cur = [oper(a) for a in args]
+    ishex = [(a[1:] if a[:1] in "+-" else a)[:4] == "hex:" for a in args]
+
+    def fmt(v, i):
+        return as_hex(str(v)) if ishex[i] else str(v)
+
     budget = [BUDGET]
     moved = True
     while moved and budget[0] > 0:
@@ -665,12 +675,12 @@ def shrink(args, pred, skip_zero=()):
                     return False
                 trial = list(cur)
                 trial[i] = v
-                return pred([str(x) for x in trial])
+                return pred([fmt(x, j) for j, x in enumerate(trial)])
             got = minimise_one(cur[i], test, budget)
             if got != cur[i]:
                 cur[i] = got
                 moved = True
-    out = [str(x) for x in cur]
+    out = [fmt(x, i) for i, x in enumerate(cur)]
     assert pred(out), "reducer returned a case that does not fail"
     return out
 
@@ -786,6 +796,11 @@ def main():
         done += k
 
     print("%d agree, %d disagree" % (agree, disagree))
+    # A dead driver outranks any wrong answer, and only the first 20
+    # failures are printed: a mutation that made the driver take SIGFPE
+    # 181 lines into a chunk filled those 20 with the knock-on
+    # comparisons and never mentioned the signal at all.
+    failures.sort(key=lambda f: not f[1].startswith("<driver exit"))
     for where, line, want, have in failures[:20]:
         if line.startswith("<driver exit"):
             # Not a wrong answer but a dead driver, so the want/got shape
