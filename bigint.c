@@ -764,6 +764,80 @@ int bi_pow(bi *r, const bi *a, const bi *e)
     return BI_OK;
 }
 
+/* a ** e mod m, square-and-multiply with a reduction after every step.
+ *
+ * Python's pow(a, e, m) is the oracle and it is exact, so there is nothing
+ * to approximate. Three of its rules are worth naming because they are
+ * where a modular exponentiation usually goes wrong:
+ *
+ *   - the result takes the sign of m, since Python's % does. pow(2, 3, -5)
+ *     is -2. Everything below works on |m| and the sign is applied once at
+ *     the end.
+ *   - |m| == 1 makes every result 0, including pow(0, 0, 1). That needs no
+ *     special case here: 1 mod 1 is 0 and 0 stays 0 through any number of
+ *     squarings.
+ *   - the base is reduced with Python's modulo, not C's, so a negative base
+ *     comes in as a residue in [0, |m|) and no later step has to think
+ *     about signs. bi_divmod already floors, which is the whole reason it
+ *     was written that way.
+ *
+ * The loop is uniform: a squaring for every bit of e and a multiplication
+ * for every set bit, with no fast path for a base of 0 or 1 and no skipping
+ * of the leading bit. So nsq is bi_bits(e) and nmul is the popcount of e,
+ * for every input, which is what t/fuzz.py asserts.
+ *
+ * shortcut: reduction is a full Knuth D division per step, and squaring
+ * goes through the general multiply. Montgomery multiplication is the
+ * upgrade path for an odd modulus, Barrett for the rest, and a dedicated
+ * squaring would save about a third of the multiply work. None of that
+ * changes the answers, so it is not queued.
+ */
+int bi_powm_counted(bi *r, const bi *a, const bi *e, const bi *m,
+                    unsigned long *nsq, unsigned long *nmul)
+{
+    bi mm, acc, base;
+    unsigned long sq = 0, mul = 0;
+    int i;
+
+    if (m->sign == 0) return BI_EDIVZERO;
+    if (e->sign < 0) return BI_ENEGPOW;
+
+    bi_init(&mm);
+    bi_init(&acc);
+    bi_init(&base);
+    bi_abs(&mm, m);
+    bi_divmod(NULL, &base, a, &mm);     /* a mod |m|, so 0 <= base < |m| */
+    bi_set_i64(&acc, 1);
+    bi_divmod(NULL, &acc, &acc, &mm);   /* 1 mod |m|, which is 0 when |m|==1 */
+
+    for (i = bi_bits(e) - 1; i >= 0; i--) {
+        bi_mul(&acc, &acc, &acc);
+        bi_divmod(NULL, &acc, &acc, &mm);
+        sq++;
+        if ((e->d[i / 32] >> (i % 32)) & 1) {
+            bi_mul(&acc, &acc, &base);
+            bi_divmod(NULL, &acc, &acc, &mm);
+            mul++;
+        }
+    }
+
+    /* [0, |m|) is where the loop leaves it; Python wants (m, 0] for m < 0. */
+    if (acc.sign != 0 && m->sign < 0) bi_sub(&acc, &acc, &mm);
+
+    bi_swap(r, &acc);
+    bi_free(&mm);
+    bi_free(&acc);
+    bi_free(&base);
+    if (nsq) *nsq = sq;
+    if (nmul) *nmul = mul;
+    return BI_OK;
+}
+
+int bi_powm(bi *r, const bi *a, const bi *e, const bi *m)
+{
+    return bi_powm_counted(r, a, e, m, NULL, NULL);
+}
+
 static int hexval(char c)
 {
     if (c >= '0' && c <= '9') return c - '0';
@@ -851,6 +925,7 @@ static const struct { const char *name; int ary; int hexin; } OPS[] = {
     { "and", 2, 0 }, { "or", 2, 0 }, { "xor", 2, 0 },
     { "hex", 1, 0 }, { "hexrt", 1, 0 }, { "unhex", 1, 1 },
     { "pow", 2, 0 }, { "mulsb", 2, 0 }, { "mulk", 2, 0 },
+    { "powm", 3, 0 }, { "powmc", 3, 0 },
 };
 
 static void emit(const bi *x)
@@ -899,6 +974,75 @@ static void mulbench(int n, int reps, int cutoff)
     printf("%6d  %11.5f  %11.5f  %s\n", n, ms_s, ms_k,
            ms_k < ms_s ? "karatsuba" : "schoolbook");
     bi_free(&a); bi_free(&b); bi_free(&r);
+}
+
+/* Modular exponentiation whose running time depends on the exponent's bits
+ * reveals the exponent. The question is therefore not whether this one is
+ * fast but whether it is flat, and this is the measurement that answers it:
+ * three exponents of the same bit length against one modulus, the first
+ * with every bit set, the second with a single bit set, the third random.
+ * A constant-time implementation prints three equal columns. This one does
+ * not, and the reason is in the loop: one modular multiplication per SET
+ * bit of the exponent. See the README.
+ *
+ * The modulus is odd and has its top bit set, which is the shape a real
+ * one has. */
+static void powmbench(int nlimbs, int ebits, int reps)
+{
+    uint64_t st = 0x9e3779b97f4a7c15ULL;
+    bi m, a, e, r;
+    clock_t t0;
+    double ms[3];
+    int i, j, k, nl;
+
+    if (nlimbs < 1 || ebits < 1) return;
+    if (reps <= 0) reps = 4000000 / (nlimbs * nlimbs * ebits) + 2;
+
+    bi_init(&m); bi_init(&a); bi_init(&e); bi_init(&r);
+    grow(&m, nlimbs);
+    grow(&a, nlimbs);
+    for (i = 0; i < nlimbs; i++) {
+        st ^= st << 13; st ^= st >> 7; st ^= st << 17;
+        m.d[i] = (bi_limb)st;
+        st ^= st << 13; st ^= st >> 7; st ^= st << 17;
+        a.d[i] = (bi_limb)st;
+    }
+    m.d[nlimbs - 1] |= 0x80000000u;
+    m.d[0] |= 1;
+    m.n = nlimbs;
+    m.sign = 1;
+    a.d[nlimbs - 1] |= 0x80000000u;
+    a.n = nlimbs;
+    a.sign = 1;
+
+    nl = (ebits + 31) / 32;
+    for (k = 0; k < 3; k++) {
+        grow(&e, nl);
+        memset(e.d, 0, (size_t)nl * sizeof *e.d);
+        if (k == 0)
+            for (i = 0; i < ebits; i++) e.d[i / 32] |= 1u << (i % 32);
+        else if (k == 1)
+            e.d[(ebits - 1) / 32] = 1u << ((ebits - 1) % 32);
+        else {
+            for (i = 0; i < nl; i++) {
+                st ^= st << 13; st ^= st >> 7; st ^= st << 17;
+                e.d[i] = (bi_limb)st;
+            }
+            for (i = ebits; i < nl * 32; i++)
+                e.d[i / 32] &= ~(1u << (i % 32));
+            e.d[(ebits - 1) / 32] |= 1u << ((ebits - 1) % 32);
+        }
+        e.n = nl;
+        e.sign = 1;
+        norm(&e);
+        t0 = clock();
+        for (j = 0; j < reps; j++) bi_powm(&r, &a, &e, &m);
+        ms[k] = (double)(clock() - t0) * 1000.0 / CLOCKS_PER_SEC / reps;
+    }
+
+    printf("%8d  %8d  %11.3f  %10.3f  %10.3f  %5.2fx\n",
+           nlimbs * 32, ebits, ms[0], ms[1], ms[2], ms[0] / ms[1]);
+    bi_free(&m); bi_free(&a); bi_free(&e); bi_free(&r);
 }
 
 static int fail(int e)
@@ -965,10 +1109,11 @@ int main(void)
     char *line = NULL;
     size_t cap = 0;
     ssize_t len;
-    bi a, b, r, r2;
+    bi a, b, c, r, r2;
 
     bi_init(&a);
     bi_init(&b);
+    bi_init(&c);
     bi_init(&r);
     bi_init(&r2);
     while ((len = getline(&line, &cap, stdin)) > 0) {
@@ -981,6 +1126,11 @@ int main(void)
         n = split(line, arg);
         if (n == 0) continue;
         op = arg[0];
+        if (n >= 3 && !strcmp(op, "powmbench")) {
+            powmbench(atoi(arg[1]), atoi(arg[2]),
+                      n > 3 ? atoi(arg[3]) : 0);
+            continue;
+        }
         if (n >= 3 && !strcmp(op, "mulbench")) {
             int c = n > 3 ? atoi(arg[3]) : 0;
             mulbench(atoi(arg[1]), atoi(arg[2]),
@@ -1001,7 +1151,11 @@ int main(void)
             puts("E parse");
             continue;
         }
-        if (ary == 2 && set_operand(&b, arg[2], 0) != 0) {
+        if (ary >= 2 && set_operand(&b, arg[2], 0) != 0) {
+            puts("E parse");
+            continue;
+        }
+        if (ary >= 3 && set_operand(&c, arg[3], 0) != 0) {
             puts("E parse");
             continue;
         }
@@ -1012,7 +1166,8 @@ int main(void)
          * operands any op ever prints back are the ones "dec" and "unhex"
          * take, so every other parse was untested. Reported separately from
          * a bad result, because which side is wrong is the whole question. */
-        if (!bi_check(&a) || (ary == 2 && !bi_check(&b))) {
+        if (!bi_check(&a) || (ary >= 2 && !bi_check(&b))
+                           || (ary >= 3 && !bi_check(&c))) {
             puts("E unnormalised operand");
             continue;
         }
@@ -1052,6 +1207,24 @@ int main(void)
             if (e2) fail(e2); else emit(&r);
         }
 
+        /* powmc prints the squaring and multiplication counts after the
+         * result. Both are fixed by the exponent alone, so t/fuzz.py can
+         * demand the exact numbers and a powm that quietly computed its
+         * answer some other way fails them while printing the right
+         * value. */
+        else if (!strcmp(op, "powm") || !strcmp(op, "powmc")) {
+            unsigned long sq = 0, ml = 0;
+            int e3 = bi_powm_counted(&r, &a, &b, &c, &sq, &ml);
+            if (e3) fail(e3);
+            else if (!strcmp(op, "powm")) emit(&r);
+            else if (!bi_check(&r)) puts("E unnormalised");
+            else {
+                char *s = bi_to_dec(&r);
+                printf("%s %lu %lu\n", s, sq, ml);
+                free(s);
+            }
+        }
+
         else if (!strcmp(op, "hex")) {
             char *s = bi_to_hex(&a);
             puts(s);
@@ -1072,6 +1245,7 @@ int main(void)
     }
     bi_free(&a);
     bi_free(&b);
+    bi_free(&c);
     bi_free(&r);
     bi_free(&r2);
 

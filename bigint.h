@@ -114,6 +114,37 @@ void bi_xor(bi *r, const bi *a, const bi *b);
  * BI_ETOOBIG. */
 int bi_pow(bi *r, const bi *a, const bi *e);
 
+/* r = a ** e mod m, which is Python's three-argument pow(a, e, m).
+ *
+ * The result carries the sign of m, because Python's % does: pow(2, 3, -5)
+ * is -2 and not 3. A modulus of 0 is BI_EDIVZERO, where Python raises
+ * ValueError. A modulus of 1 or -1 makes every result 0, and that comes out
+ * of the ordinary path rather than from a special case.
+ *
+ * A negative exponent is BI_ENEGPOW. Python answers one when the base is
+ * invertible modulo m and raises ValueError when it is not, which needs an
+ * extended GCD this library does not have; refusing is better than
+ * answering a non-invertible base wrongly. bi_pow refuses a negative
+ * exponent too, so at least the rule is the same in both.
+ *
+ * NOT constant time. The number of modular multiplications is exactly the
+ * Hamming weight of e, so the running time reveals it. Measured, not
+ * argued: see `make bench` and the README. Do not use this to exponentiate
+ * a secret.
+ */
+int bi_powm(bi *r, const bi *a, const bi *e, const bi *m);
+
+/* bi_powm with the loop's work counted: *nsq modular squarings and *nmul
+ * modular multiplications, either pointer NULL to ignore it.
+ *
+ * Both counts are exactly predictable from e alone, bit length and popcount,
+ * which is what lets t/fuzz.py assert that the square-and-multiply loop
+ * actually ran. A correct answer is no evidence that it came from the code
+ * it was meant to come from: bi_pow followed by a single reduction returns
+ * the same value for every case small enough to compute that way. */
+int bi_powm_counted(bi *r, const bi *a, const bi *e, const bi *m,
+                    unsigned long *nsq, unsigned long *nmul);
+
 int bi_bits(const bi *x);   /* bit length of |x|; 0 for zero, as Python */
 
 

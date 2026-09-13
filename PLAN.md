@@ -4,8 +4,9 @@
 
 Arbitrary-precision signed integers in one C11 file, with **Python's `int` as
 the specification**. Addition, subtraction, multiplication, floor division,
-modulo, power, comparison, shifts, bitwise and/or/xor, negation, absolute
-value, and conversion to and from decimal and hexadecimal strings.
+modulo, power, modular exponentiation, comparison, shifts, bitwise
+and/or/xor, negation, absolute value, and conversion to and from decimal and
+hexadecimal strings.
 
 For every one of those, `bigint` must produce exactly what Python produces,
 byte for byte on the string forms. Where C and Python differ, floor division
@@ -13,11 +14,13 @@ and modulo signs, shifts of negative values, bitwise operations on negative
 values, **Python wins**, because Python is the oracle and an oracle you
 overrule is not an oracle.
 
-The two deliberate deviations from Python are both errors, not wrong
-answers, and both are in `bigint.h`: a negative exponent is refused instead of
-returning a float, and a shift or power whose result would exceed
-`BI_MAX_BITS` is refused instead of attempted. `t/fuzz.py` models both rules,
-so they are tested as well as documented.
+The three deliberate deviations from Python are all errors, not wrong
+answers, and all are in `bigint.h`: a negative exponent to two-argument `pow`
+is refused instead of returning a float, a negative exponent to
+three-argument `pow` is refused instead of returning a modular inverse, and a
+shift or power whose result would exceed `BI_MAX_BITS` is refused instead of
+attempted. `t/fuzz.py` models all three rules, so they are tested as well as
+documented.
 
 ## Hard invariant
 
@@ -44,27 +47,44 @@ fault injection (commit 16).
 1. Python's native `int`, via `t/fuzz.py`. It is arbitrary-precision, it
    is the reference implementation for every operation here, and there is zero
    ambiguity about the right answer. Nothing about it is under this project's
-   control. Currently 7,314,868 cases across 68 seeds, zero disagreements.
+   control. 7,314,868 cases across 68 seeds at commit 20, zero
+   disagreements; the sweep is re-run at the end of a milestone.
 
 2. Schoolbook multiply against Karatsuba multiply. Two independent
    implementations of one function, checked against each other on identical
    operands as well as against Python. Weaker than Python. A shared
    misunderstanding would agree, but far cheaper, so every `mul` case runs
    through both.
-3. ASan and UBSan, via `make test-asan`. A bignum indexes limb arrays
+3. The squaring and multiplication counts `bi_powm_counted` reports,
+   against `bit_length` and `popcount` computed by Python. Not a value
+   oracle: it is the assertion that the square-and-multiply loop ran at
+   all, since `bi_pow` followed by one reduction returns the identical
+   value for every case small enough to compute that way.
+4. ASan and UBSan, via `make test-asan`. A bignum indexes limb arrays
    constantly, `addat()` writes past the end of its operand by design, and the
    Karatsuba windows alias the parent's buffer; UBSan also covers the shift
    widths, where `>> (32 - s)` with `s == 0` would be undefined in 32 bits.
-4. `../unrepro` for build reproducibility. Verified REPRODUCIBLE across
+5. `../unrepro` for build reproducibility. Verified REPRODUCIBLE across
    varied build directory, TZ, locale, umask, hostname, user and
    `SOURCE_DATE_EPOCH`.
 
 ## Non-goals
 
-Modular exponentiation (three-argument `pow`), GCD, integer square root,
-primality, random number generation. Bases other than 10 and 16. Conversion
-to or from floating point. Bitwise NOT as a named operation (`~x` is
-`-x - 1`, and the library has both).
+Primality testing and random number generation. Bases other than 10 and 16.
+Conversion to or from floating point. Bitwise NOT as a named operation (`~x`
+is `-x - 1`, and the library has both).
+
+A modular inverse, which is what Python returns for `pow(a, -1, m)` and what
+`bi_powm` refuses. It needs an extended GCD, and the point of refusing is
+that answering a non-invertible base wrongly would be worse than not
+answering at all.
+
+Constant-time arithmetic. `bi_powm` exists because modular exponentiation is
+the obvious use for a bignum library, not because this is a cryptographic
+one: its running time is a function of the exponent's bits and `make bench`
+measures by how much. Making it flat would mean Montgomery multiplication,
+a fixed-weight exponent recoding and branchless limb code, which is a
+different project.
 
 Subquadratic base conversion, Toom-Cook or FFT multiplication, and
 Burnikel-Ziegler division are not permanent non-goals, but they are not
@@ -176,7 +196,7 @@ function's output is its arguments.
       files: bigint.c t/fuzz.py
       proves: a quarter of generated draws now run twice, once with decimal
               operands and once with the same values written in hex,
-              against the same oracle answer. 14.8% of cases end up on the
+              against the same oracle answer. 15.7% of cases end up on the
               hex path, across all 14 arithmetic and bitwise ops plus pow,
               shl and shr.
               With a decimal parser that drops the last digit past 40
@@ -274,10 +294,78 @@ function's output is its arguments.
 
 ### Milestone 2: the operations that need a second implementation
 
-- [ ] 21 three-argument `pow(a, e, m)` by square-and-multiply with reduction
+- [x] 21 three-argument `pow(a, e, m)` by square-and-multiply with reduction
       at every step, differential against Python's `pow(a, e, m)`
       why: the obvious use for a bignum library, and the only way to make
            `pow` usable at cryptographic sizes
+      files: bigint.c bigint.h Makefile t/fuzz.py
+      done: `bi_powm`, and `bi_powm_counted` beside it, which is the same
+            function reporting how much work the loop did. The driver gains
+            `powm` and `powmc` and a third operand, which no operation had
+            before. The loop is uniform: a squaring for every bit of the
+            exponent and a multiplication for every set bit, with no fast
+            path for a base of 0 or 1 and no special case for a modulus of
+            1. So the two counts are a function of the exponent alone,
+            bit_length and popcount, and Python can predict them exactly.
+      proves: 5024 cases per run against Python's own pow(a, e, m), 4707 of
+              them random draws and 317 from the corpus and the sign
+              matrix. `make test` is 107899 agree, 0 disagree; `make
+              test-asan` 22898.
+              Thirteen mutants, twelve RED against `t/run.sh 3000 0`, which
+              is 10898 cases clean, and against the 312 small powm cases on
+              their own. Dropping the reduction after the squaring does not
+              finish at all, because the 2048-bit corpus case then squares
+              an unreduced accumulator; 51 of 312 on the small set. The
+              rest: no reduction after the multiply 65, no negative-modulus
+              sign fix 158, the sign fix applied to a zero result too 32,
+              the exponent walked low to high 122, the loop started one bit
+              too high 196, `bi_pow` and one reduction instead of the loop
+              131, the modulus sign not stripped 158, the exponent checked
+              before the modulus 1, the two counts swapped in the driver
+              104, two bits of the exponent tested instead of one 223, `1`
+              left unreduced by the modulus 1.
+              The counts earn themselves on the two that values barely see.
+              `bi_pow` and one reduction leaves 308 of the 312 small cases
+              agreeing and all four disagreements are `powmc` count lines
+              whose values are correct, which is the "the new path never
+              ran" failure the counts exist for. Starting the loop one bit
+              above the top changes no value at all for a well-formed
+              exponent, since the extra iteration squares 1.
+      found: the fuzzer's oracle had no arity guard. `ev()` unpacked its
+             operands positionally, so the first corpus case with the wrong
+             operand count, `powm 2 3`, killed the whole run with a
+             ValueError instead of comparing against the `E parse` the
+             driver prints. No existing case had a count mismatch, so this
+             had been unreachable since commit 00.
+             The README's "14.8% of cases take the hex path" does not match
+             what the suite generates. Measured over the cases a run
+             actually emits it is 15.6% before this item and 15.7% after,
+             and it is 15.5% to 16.0% across five seeds, so the figure was
+             wrong when it was written rather than drifting since.
+      note: NOT constant time, and measured rather than argued. `make
+            bench` times three exponents of one bit length against one
+            modulus: every bit set, one bit set, random. The all-ones
+            column is 2.0x the one-bit column at every size from a
+            1024-bit modulus to 4096 bits, and the random column lands
+            where its popcount puts it. The cause is in the loop, one
+            modular multiplication per set bit, and `powmc` prints that
+            count. `bigint.h` carries the warning above `bi_powm` as well,
+            because a header is where somebody about to exponentiate a
+            secret looks.
+      note: one mutant SURVIVES and is equivalent rather than missed.
+            Dropping the base reduction before the loop changes no answer,
+            because (acc * a) mod m equals (acc * (a mod m)) mod m and
+            every multiplication is reduced immediately afterwards. It
+            costs a wide multiplication per set bit instead of a narrow
+            one, which is a size measure the oracle cannot see and which
+            nothing here claims to check.
+      note: a negative exponent is refused, `E negpow`, where Python
+            returns a modular inverse for an invertible base and raises for
+            the rest. It needs an extended GCD, which item 22 brings but
+            which still would not make the decision obvious: returning a
+            plausible wrong residue for a non-invertible base is worse than
+            refusing. The refusal is the third documented deviation from
+            the oracle and `t/fuzz.py` models it.
 - [ ] 22 `bi_gcd` by binary GCD, against `math.gcd`
 - [ ] 23 `bi_isqrt` by Newton iteration, against `math.isqrt`
       note: 21 to 23 are all "second implementation of something Python

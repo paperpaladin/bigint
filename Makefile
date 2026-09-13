@@ -39,6 +39,15 @@ bench: bigint
 	@echo " limbs  school/ms  karats./ms  faster"
 	@for n in 96 128 256 512 1024 2048 4096; do echo "mulbench $$n 0"; \
 	 done | ./bigint
+	@echo
+	@echo "Modular exponentiation is not constant time: one modular"
+	@echo "multiplication per SET bit of the exponent, so three exponents"
+	@echo "of one length differ by their popcount and nothing else"
+	@echo "mod/bits  exp/bits  all ones/ms  one bit/ms   random/ms  ratio"
+	@for n in 32 64 128; do echo "powmbench $$n 1024"; \
+	 done | ./bigint
+	@echo "powmbench 64 2048" | ./bigint
+	@echo "powmbench 128 4096" | ./bigint
 
 clean:
 	rm -f bigint bigint-asan

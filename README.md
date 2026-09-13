@@ -5,14 +5,17 @@ native `int` on millions of cases.
 
 ```
 $ make test
-107573 agree, 0 disagree
+107899 agree, 0 disagree
 
 $ make test-asan
-22571 agree, 0 disagree
+22898 agree, 0 disagree
 ```
 
-Across 68 seeds at 100k cases each: **7,314,868 agree, 0 disagree**, with
-operand magnitudes from 0 bits to 16,000 bits (500 limbs).
+Across 68 seeds at 100k cases each, measured at commit 20: **7,314,868
+agree, 0 disagree**, with operand magnitudes from 0 bits to 16,000 bits
+(500 limbs). The two counts above are the suite as it stands now; the long
+sweep is re-run at the end of a milestone and not after every item, which
+is why its total names the commit it was taken at.
 
 
 Python's `int` is arbitrary-precision and is the reference implementation for
@@ -106,7 +109,10 @@ A quarter of generated draws run twice, once with decimal operands and
 once with the same values written in hex, marked `hex:`, against the same
 oracle answer. Every case otherwise rests on `bi_set_dec` being right, and
 a parse bug that is symmetric with a format bug cancels out and leaves the
-run green. 14.8% of cases take the hex path.
+run green. 15.7% of cases take the hex path, counted over what a run at
+seed 0 actually emits; it is 15.5% to 16.0% across five seeds. This figure
+had said 14.8% since item 18 and was wrong when written: the same count
+against the suite as it stood before item 21 gives 15.6%.
 
 What that buys is visible with a planted bug. A decimal parser that drops
 the last digit past 40 digits makes 1107 of 2515 decimal cases disagree
@@ -125,9 +131,10 @@ which is how the fuzzer spends a single process on millions of cases instead
 of a million processes:
 
 ```
-$ printf 'divmod -7 2\npow 2 64\nhex -255\nand -1 5\n' | ./bigint
+$ printf 'divmod -7 2\npow 2 64\npowm 2 3 -5\nhex -255\nand -1 5\n' | ./bigint
 -4 1
 18446744073709551616
+-2
 -0xff
 5
 ```
@@ -155,9 +162,10 @@ half the throughput of a 64-bit-limb implementation. Marked `shortcut:` in the
 source with the upgrade path.
 
 Multiplication is schoolbook below 96 limbs and Karatsuba above. Division is
-Knuth algorithm D in the `divmnu` form from Hacker's Delight. Hex conversion
-is limb-aligned and linear. Decimal conversion is quadratic in both
-directions.
+Knuth algorithm D in the `divmnu` form from Hacker's Delight. Modular
+exponentiation is square-and-multiply with a reduction after every step. Hex
+conversion is limb-aligned and linear. Decimal conversion is quadratic in
+both directions.
 
 ### The invariant the oracle cannot see
 
@@ -284,6 +292,160 @@ the recursive version is 96, three times that, because each level
 allocates six temporaries. Cutoffs 8 through 128 were scanned at 256, 1024 and
 4096 limbs. The optimum sat in the 80 to 112 band and 96 is the middle of it.
 
+## Modular exponentiation, and what its running time says
+
+`powm a e m` is Python's `pow(a, e, m)`: square-and-multiply over the bits of
+`e` with a reduction after every squaring and every multiplication. The
+oracle is exact here in a way it is not for a benchmark, so every answer is
+checked rather than sampled. A `make test` run puts 5,024 cases through it,
+4,707 of them random draws, every one against Python's own three-argument
+`pow`.
+
+Three of Python's rules are where a modular exponentiation usually goes
+wrong, and none of them is special-cased in the library:
+
+```
+  pow(2, 3, -5)   is -2, not 3        the result takes the sign of m
+  pow(0, 0, 1)    is 0, not 1         |m| == 1 makes every answer 0
+  pow(-2, 3, 5)   is 2, not -3        the base is reduced with Python's %
+```
+
+The second falls out of `1 mod 1` rather than from a test for it, which is
+why deleting that one reduction is caught by `powm 0 0 1` and by nothing
+else. The third is `bi_divmod` already flooring the way Python does, so a
+negative base arrives in the loop as a residue in `[0, |m|)` and no later
+step has to think about signs.
+
+A modulus of 0 is `E divzero`, which is Python's ValueError, and it is
+checked before the exponent: `pow(2, -1, 0)` complains about the modulus in
+both.
+
+**A negative exponent is refused.** `E negpow`, where Python returns a
+modular inverse when the base is invertible and raises when it is not.
+Implementing it needs an extended GCD, which this library does not have, and
+the failure mode of guessing is returning a plausible wrong residue for a
+non-invertible base. That is a deviation from the oracle, it is the third
+one, and `t/fuzz.py` models it so it stays tested rather than drifting.
+
+### It is not constant time, and here is the gap
+
+A modular exponentiation whose running time depends on the exponent's bits
+reveals the exponent. This one does: the loop performs one modular
+multiplication per **set** bit, so the work is a function of the exponent's
+Hamming weight and nothing hides that.
+
+Measured, not argued. `make bench` runs three exponents of the same bit
+length against one modulus, the first with every bit set, the second with a
+single bit set, the third random:
+
+```
+mod/bits  exp/bits  all ones/ms  one bit/ms   random/ms  ratio
+    1024      1024        5.631       2.803       3.995   2.01x
+    2048      1024       19.116       9.540      14.549   2.00x
+    4096      1024       65.909      33.195      49.853   1.99x
+    2048      2048       37.967      19.285      28.072   1.97x
+    4096      4096      269.289     132.817     202.739   2.03x
+```
+
+Twice the time for twice the set bits, at every size, and the random
+exponent lands where its popcount puts it. A constant-time implementation
+would print three equal columns. `bigint.h` says so above `bi_powm` as well,
+because a header is where somebody about to exponentiate a secret will look.
+
+Flattening it is not queued. It would mean Montgomery multiplication for the
+odd case, a recoding that gives every exponent the same weight, and
+branchless limb code throughout, and none of that is what this repository is
+for.
+
+### Asserting that the loop ran
+
+A correct answer is no evidence that it came from the code it was meant to
+come from. `bi_pow` followed by one reduction returns exactly the same value
+for every case small enough to compute that way, so a `bi_powm` wired to do
+that would pass a differential test that only looks at values.
+
+So `bi_powm_counted` reports the loop's work and the driver's `powmc` op
+prints it after the result. Both numbers are fixed by the exponent alone,
+one squaring per bit and one multiplication per set bit, so Python computes
+them with `bit_length` and `popcount` and the comparison is exact:
+
+```
+$ printf 'powmc 3 65537 1000000007\n' | ./bigint
+754428556 17 2
+```
+
+That earned itself immediately. Replacing the loop with `bi_pow` and a
+single reduction leaves 308 of 312 small powm cases agreeing, and all four
+disagreements are `powmc` count lines whose values are right:
+
+```
+  powmc 7 255 1              want 0 8 8          got 0 0 0
+  powmc 5 1 7                want 5 1 1          got 5 0 0
+  powmc 3 65537 1000000007   want 754428556 17 2 got 754428556 0 0
+  powmc 3 1 7                want 3 1 1          got 3 0 0
+```
+
+### The input classes
+
+Random draws cover the ordinary case and cover none of these, so each is in
+the fixed corpus and runs on every invocation:
+
+| class | what it would otherwise hide |
+| --- | --- |
+| a modulus of 1 and of -1 | every answer is 0, so a reduction left out of the `1 mod m` step is visible nowhere else |
+| an even modulus, and a power of two | rules out Montgomery multiplication for anyone who reaches for it later, and a mask instead of a division |
+| a modulus of one limb, and 2^32 and 2^64 either side | Knuth D takes a different path for a single-limb divisor |
+| an exponent of 0 and of 1 | the answer is a reduction and not an exponentiation, and `1 mod m` is 0 for `|m| == 1` and negative for `m < 0` |
+| a base of 0, a base that is a multiple of the modulus, a base far wider than it | the reduction has to happen before the loop, not after |
+| both signs of the base against both signs of the modulus, at both exponent parities | the sign comes from the modulus, which is the opposite of what `pow` with two arguments does |
+| a negative exponent, and a zero modulus, and both at once | refusals, in the order Python checks them |
+| 2048-bit and 4096-bit moduli, each a product of two half-width factors | the size this operation is actually used at, and the only cases where a 2048-bit exponent runs |
+
+A random `powm` draw is cost-capped: one squaring per exponent bit, each
+quadratic in the modulus, means a 16000-bit exponent against a 16000-bit
+modulus is 16000 squarings of 500 limbs and one draw in a hundred thousand
+would own the whole run. `POWM_BUDGET` caps `bits(e) * limbs(m)^2`, and the
+large sizes are in the corpus where there are a fixed few of them.
+
+### The mutation run
+
+Thirteen mutants, each built and run against `t/run.sh 3000 0` (10,898
+cases clean) and against the 312 small `powm` cases on their own. Twelve
+died. The survivor is recorded as a survivor:
+
+| mutant | suite | small cases |
+| --- | --- | --- |
+| drop the base reduction before the loop | 0 disagree | 0 disagree, SURVIVES |
+| drop the reduction after the squaring | does not finish | 51 of 312 |
+| drop the reduction after the multiplication | 65 | 35 of 312 |
+| drop the negative-modulus sign fix | 158 | 129 of 312 |
+| apply the sign fix to a zero result too | 32 | 9 of 312 |
+| walk the exponent's bits low to high | 122 | 67 of 312 |
+| start the loop one bit above the top | 196 | 68 of 312 |
+| `bi_pow` and one reduction instead of the loop | 131 | 4 of 312, all counts |
+| use the modulus without stripping its sign | 158 | 129 of 312 |
+| check the exponent before the modulus | 1 | 1 of 312 |
+| swap the two counts in the driver | 104 | 1 of 312 |
+| test two bits of the exponent instead of one | 223 | 117 of 312 |
+| leave `1` unreduced by the modulus | 1 | 1 of 312 |
+
+The survivor is equivalent, not missed. Reducing the base before the loop is
+a size measure and not a correctness one: `(acc * a) mod m` equals
+`(acc * (a mod m)) mod m`, and since every multiplication is reduced
+immediately afterwards, a 16000-bit base gives exactly the same answers as
+its residue would. What it costs is one wide multiplication per set bit
+instead of one narrow one, which no comparison against Python can see and no
+assertion here tries to.
+
+Two of the thirteen are worth naming for what caught them rather than for
+dying. Starting the loop one bit above the top changes no value for an
+exponent whose top bit is where it should be, because the extra iteration
+squares 1; it is caught by the counts, and separately by `powm 5 0 7`, where
+an exponent of 0 makes it read `e->d[0]` of a value with no limbs at all.
+And checking the exponent before the modulus is a single case, `powm 2 -1 0`,
+which is in the corpus only because Python was asked which error it reports
+first.
+
 ## What does NOT work
 
 Plainly, because a README that only lists successes is not finished.
@@ -303,8 +465,9 @@ digit group underscores (`int("1_000")`), and any other base. The fuzzer does
 not generate those forms, so this is a documented restriction, not a
 tested one.
 
-Two operations refuse inputs Python accepts. A negative exponent is
-`E negpow`, where Python returns a float. A shift or power whose result would
+Three operations refuse inputs Python accepts. A negative exponent to
+`pow` is `E negpow`, where Python returns a float, and a negative exponent to
+`powm` is the same error, where Python returns a modular inverse. A shift or power whose result would
 exceed `BI_MAX_BITS` (16 Mbit) is `E toobig`, where Python would try. Both
 are deviations from the oracle; `t/fuzz.py` models both rules explicitly so
 they stay tested, but they are deviations.
@@ -335,7 +498,7 @@ reaches, for the base-conversion reason above. The `make bench` numbers at
 4096 limbs are therefore measured on values the fuzzer has never checked.
 
 Most cases still depend on the decimal parser being correct. The hex twins
-cover 14.8% of them, and `dec`, `hex`, `hexrt` and `unhex` are excluded from
+cover 15.7% of them, and `dec`, `hex`, `hexrt` and `unhex` are excluded from
 twinning by construction, so a parser bug symmetric with a formatter bug
 would still cancel out on the other 85%. The twins narrow where such a bug
 can hide; they do not remove it.
@@ -346,10 +509,14 @@ only a rare operand shape reaches is therefore still possible: the gate
 proves the common paths are clean, not all of them.
 
 
-Not implemented at all: modular exponentiation (three-argument `pow`),
-GCD, integer square root, primality testing, conversion to or from floating
-point, bases other than 10 and 16, bitwise NOT as a named operation (it is
-`-x - 1`), and bit counting.
+Not implemented at all: GCD, integer square root, primality testing,
+conversion to or from floating point, bases other than 10 and 16, bitwise
+NOT as a named operation (it is `-x - 1`), and bit counting.
+
+`bi_powm` is not constant time and is not a cryptographic primitive. The
+measurement above says by how much its running time varies with the
+exponent; nothing here is hardened against a timing attack, a cache-timing
+attack or anything else of that kind.
 
 The line protocol cannot carry every operand. Operands are separated by
 whitespace, so an empty operand or one containing a space is not

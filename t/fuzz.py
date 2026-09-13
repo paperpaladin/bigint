@@ -181,6 +181,11 @@ def hex_twin(cases):
 
 def ev(op, args):
     """The oracle. Returns the exact line bigint is expected to print."""
+    if len(args) != ARITY[op]:
+        # The driver reports an operand-count mismatch as a parse error,
+        # which is also what Python says about int("") -- the line protocol
+        # cannot carry an empty or space-containing operand.
+        return "E parse"
     try:
         if op == "unhex":
             return str(int(args[0], 16))
@@ -213,6 +218,24 @@ def ev(op, args):
         if x.bit_length() * e > MAX_BITS:
             return "E toobig"
         return str(x ** e)
+    if op in ("powm", "powmc"):
+        x, e, m = vals
+        # Python checks the modulus before the exponent and so does bigint:
+        # pow(2, -1, 0) is the 3rd-argument ValueError, not the negative
+        # exponent one.
+        if m == 0:
+            return "E divzero"
+        if e < 0:
+            # bigint refuses, where Python returns a modular inverse when the
+            # base is invertible and raises when it is not. A deviation, and
+            # modelled here so it stays tested.
+            return "E negpow"
+        v = pow(x, e, m)
+        if op == "powm":
+            return str(v)
+        # powmc also prints the loop's work, which is fixed by the exponent
+        # alone: one squaring per bit, one multiplication per set bit.
+        return "%d %d %d" % (v, e.bit_length(), bin(e).count("1"))
     if op == "and":
         return str(vals[0] & vals[1])
     if op == "or":
@@ -249,10 +272,18 @@ def ev(op, args):
 ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2,
          "mul": 2, "mulsb": 2, "mulk": 2, "divf": 2, "mod": 2, "divmod": 2,
          "shl": 2, "shr": 2, "and": 2, "or": 2, "xor": 2,
-         "hex": 1, "hexrt": 1, "unhex": 1, "pow": 2}
+         "hex": 1, "hexrt": 1, "unhex": 1, "pow": 2,
+         "powm": 3, "powmc": 3}
 # mulsb and mulk are not picked directly: every "mul" case is emitted three
 # times, once per multiplication path, on identical operands.
-OPS = [o for o in ARITY if o not in ("mulsb", "mulk")]
+#
+# powm is not picked directly either: a random draw emits powmc instead,
+# which is the same function printing the squaring and multiplication counts
+# after the value. One case then checks the answer AND that the
+# square-and-multiply loop ran, and modular exponentiation is too expensive
+# to run twice for that. powm itself is covered by the corpus and the sign
+# matrix.
+OPS = [o for o in ARITY if o not in ("mulsb", "mulk", "powm")]
 
 
 def rand_hexlit(rnd):
@@ -284,6 +315,68 @@ def rand_pow_exp(rnd, x):
     return rnd.randint(0, max(1, 30000 // x.bit_length()))
 
 
+# Modular exponentiation costs one squaring per bit of the exponent, each
+# one quadratic in the limb count of the modulus, so an unguarded draw from
+# the magnitude buckets puts a single case into the minutes: a 16000-bit
+# exponent against a 16000-bit modulus is 16000 squarings of 500 limbs.
+# POWM_BUDGET caps bits(e) * limbs(m)^2 and keeps a random case in the low
+# milliseconds. The sizes real use has, 2048 and 4096 bits, are in the
+# corpus instead, where there are a fixed few of them rather than one in
+# every draw.
+POWM_BUDGET = 500000
+
+# Moduli that random sampling would hardly ever produce and that each rule
+# out a different shortcut: 1 and -1 make every answer 0, an even modulus
+# is the one Montgomery multiplication cannot take, and the rest sit on or
+# beside a limb boundary.
+POWM_MODULI = [1, -1, 2, -2, 3, 4, 10, 2**32 - 1, 2**32, 2**32 + 1,
+               2**64 - 1, 2**64, 2**64 + 1, 2**31, 2**128 - 1, 2**128]
+
+
+def rand_powm(rnd):
+    """(base, exponent, modulus) for one powm case."""
+    r = rnd.random()
+    if r < 0.20:
+        m = signed(rnd, rnd.choice(POWM_MODULI))
+    elif r < 0.26:
+        m = 0                                   # must be refused
+    else:
+        m = signed(rnd, from_bucket(rnd, rnd.choices(BUCKETS[1:6],
+                                                     WEIGHTS[1:6])[0]))
+
+    # The base has to be reduced before the loop starts, so the cases that
+    # matter are the ones where it is not already a residue: larger than the
+    # modulus, an exact multiple of it, negative, or zero.
+    r = rnd.random()
+    if r < 0.10:
+        a = 0
+    elif r < 0.18 and m:
+        a = m * rnd.randint(1, 5)                      # residue 0
+    elif r < 0.26 and m:
+        a = signed(rnd, abs(m) + rnd.randint(0, 2))    # just past the modulus
+    else:
+        a = rand_val(rnd)
+
+    r = rnd.random()
+    if r < 0.10:
+        e = rnd.choice([0, 1, 2, 3])
+    elif r < 0.18:
+        e = -rnd.randint(1, 10**20)                    # must be refused
+    else:
+        limbs = max(1, (abs(m).bit_length() + 31) // 32)
+        k = rnd.randint(1, max(1, min(16000, POWM_BUDGET // (limbs * limbs))))
+        shape = rnd.random()
+        if shape < 0.15:
+            e = (1 << k) - 1        # every bit set: the most work
+        elif shape < 0.30:
+            e = 1 << (k - 1)        # one bit set: the least
+        elif shape < 0.38:
+            e = 65537               # the exponent most RSA keys use
+        else:
+            e = rnd.getrandbits(k) | (1 << (k - 1))
+    return a, e, m
+
+
 def gen(rnd):
     """One draw, one or more cases."""
     op = rnd.choice(OPS)
@@ -293,6 +386,9 @@ def gen(rnd):
         return cases + hex_twin(cases) if rnd.random() < 0.25 else cases
     if op in ("shl", "shr"):
         cases = [(op, [str(rand_val(rnd)), str(rand_shift(rnd))])]
+        return cases + hex_twin(cases) if rnd.random() < 0.25 else cases
+    if op == "powmc":
+        cases = [(op, [str(v) for v in rand_powm(rnd)])]
         return cases + hex_twin(cases) if rnd.random() < 0.25 else cases
     if op == "unhex":
         return [(op, [rand_hexlit(rnd)])]
@@ -316,6 +412,13 @@ def gen(rnd):
     return cases
 
 
+
+# Moduli at the sizes modular exponentiation is actually used at, each the
+# product of two factors half its width, which is the shape of an RSA
+# modulus. Nothing here depends on either factor being prime and nothing
+# claims they are; the oracle computes whatever the right answer is.
+M2048 = (2**1024 - 105) * (2**1024 - 2027)
+M4096 = (2**2048 - 1557) * (2**2048 - 361)
 
 CORPUS = [
     ("dec", ["0"]), ("dec", ["-0"]), ("dec", ["+0"]), ("dec", ["7"]),
@@ -442,15 +545,85 @@ CORPUS = [
     ("pow", [str(2**64 - 1), "3"]), ("pow", [str(-(2**64)), "5"]),
     ("pow", ["10", "500"]), ("pow", ["-10", "501"]),
 
-
-
-
-
-
-
-
-
-
+    # --- three-argument pow -------------------------------------------
+    # Python's pow(a, e, m) is exact for every one of these, so each line
+    # below is a byte-for-byte comparison rather than an approximation.
+    # What they cover is the inputs a random draw reaches rarely or never.
+    #
+    # A modulus of 1 or -1: every answer is 0, pow(0, 0, 1) included. No
+    # special case in the library produces that, it falls out of 1 mod 1.
+    ("powm", ["0", "0", "1"]), ("powm", ["5", "3", "1"]),
+    ("powm", ["-5", "3", "1"]), ("powm", ["0", "0", "-1"]),
+    ("powm", ["5", "3", "-1"]), ("powmc", ["7", "255", "1"]),
+    ("powm", [str(2**16000 - 1), "255", "1"]),
+    # An exponent of 0 or 1, where the answer is a reduction and not an
+    # exponentiation. 1 mod m is not always 1: it is 0 for a modulus of 1
+    # and negative for a negative modulus.
+    ("powm", ["5", "0", "7"]), ("powm", ["5", "0", "-7"]),
+    ("powm", ["5", "1", "7"]), ("powm", ["5", "1", "-7"]),
+    ("powm", ["0", "0", "7"]), ("powm", ["0", "1", "7"]),
+    ("powm", ["7", "1", "7"]), ("powm", ["-5", "0", "7"]),
+    ("powm", ["-5", "1", "7"]), ("powmc", ["5", "0", "7"]),
+    ("powmc", ["5", "1", "7"]),
+    # An even modulus, which is the one Montgomery multiplication cannot
+    # take, and a power of two, where reduction is a mask.
+    ("powm", ["3", "100", "4"]), ("powm", ["3", "100", "1000"]),
+    ("powm", ["3", "100", str(2**32)]), ("powm", ["3", "100", str(2**64)]),
+    ("powm", [str(2**64 + 1), "1000", str(2**128)]),
+    ("powm", ["3", "1000", str(2**1024)]),
+    # A modulus of one limb, and one either side of a limb boundary.
+    ("powm", ["7", "1000", "2"]), ("powm", ["7", "1000", "3"]),
+    ("powm", ["7", "1000", "4294967295"]),
+    ("powm", ["7", "1000", "4294967296"]),
+    ("powm", ["7", "1000", "4294967297"]),
+    ("powm", ["7", "1000", str(2**64 - 1)]),
+    ("powm", ["7", "1000", str(2**64)]),
+    ("powm", ["7", "1000", str(2**64 + 1)]),
+    ("powm", ["7", "1000", str(2**96 + 1)]),
+    # A base of 0, a base that is an exact multiple of the modulus, and a
+    # base far wider than it: the reduction has to happen before the loop,
+    # not after it.
+    ("powm", ["0", "1000", "7"]), ("powm", ["0", "0", "7"]),
+    ("powm", ["49", "1000", "7"]), ("powm", ["-49", "1001", "7"]),
+    ("powm", [str(10**500), "1000", "7"]),
+    ("powm", [str(-(10**500)), "1001", "7"]),
+    ("powm", [str(2**16000 - 1), "3", str(2**32 + 1)]),
+    ("powm", [str(2**16000 - 1), "3", str(2**16000 - 1)]),
+    # Both signs of the base against both signs of the modulus, at both
+    # exponent parities. The result takes the sign of the modulus because
+    # Python's % does, which is the same rule bi_divmod already follows.
+    ("powm", ["-3", "3", "7"]), ("powm", ["-3", "4", "7"]),
+    ("powm", ["-3", "3", "-7"]), ("powm", ["-3", "4", "-7"]),
+    ("powm", ["3", "3", "-7"]), ("powm", ["3", "4", "-7"]),
+    ("powm", ["-1", "1", "-7"]), ("powm", ["-7", "1", "-7"]),
+    # Refusals. The modulus is checked before the exponent, in Python too:
+    # pow(2, -1, 0) is the 3rd-argument error and not the exponent one.
+    ("powm", ["2", "3", "0"]), ("powm", ["0", "0", "0"]),
+    ("powm", ["-2", "3", "0"]), ("powm", ["2", "-1", "0"]),
+    # A negative exponent is refused whether or not the base is invertible.
+    # Python inverts the first and raises on the second; bigint refuses
+    # both, which is a deviation and is why it is pinned here.
+    ("powm", ["2", "-1", "5"]), ("powm", ["2", "-1", "4"]),
+    ("powm", ["2", str(-(10**30)), "7"]), ("powmc", ["2", "-1", "5"]),
+    # The line protocol, on the operand the other ops do not have.
+    ("powm", ["2", "3", "1x"]), ("powm", ["2", "3", "0x10"]),
+    ("powm", ["2", "3"]),
+    # The counts powmc prints are the exponent's bit length and popcount,
+    # so an exponent of a known shape pins them exactly: all bits set, one
+    # bit set, and the 17-bit 2-bit exponent most RSA keys use.
+    ("powmc", ["3", str(2**64 - 1), "1000000007"]),
+    ("powmc", ["3", str(2**64), "1000000007"]),
+    ("powmc", ["3", "65537", "1000000007"]),
+    ("powmc", ["3", "0", "1000000007"]), ("powmc", ["3", "1", "7"]),
+    ("powmc", [str(M2048 - 3), "65537", str(M2048)]),
+    # 2048 and 4096 bits, which is what this operation is for. The
+    # all-bits-set exponent is the worst case for the loop and the reason
+    # the running time leaks the exponent; see the README.
+    ("powm", ["7", "65537", str(M2048)]),
+    ("powm", [str(M2048 - 3), str(2**2048 - 1), str(M2048)]),
+    ("powm", [str(M2048 + 7), str(M2048 // 3), str(M2048)]),
+    ("powm", ["7", "65537", str(M4096)]),
+    ("powm", [str(M4096 - 3), str(2**1024 - 1), str(M4096)]),
 ]
 
 
@@ -495,6 +668,15 @@ def sign_matrix():
         for sx in (1, -1):
             for e in ("0", "1", "2", "3", "17", "-1"):
                 cases.append(("pow", [str(sx * x), e]))
+    # Three-argument pow has a third sign to enumerate, and the result's
+    # sign comes from the modulus rather than from the base.
+    for x in (3, 7, 2**32 + 1, 2**64 - 1):
+        for m in (7, 2**32, 2**64 + 1, 10**20):
+            for sx in (1, -1):
+                for sm in (1, -1):
+                    for e in ("0", "1", "2", "17"):
+                        cases.append(("powm",
+                                      [str(sx * x), e, str(sm * m)]))
     return cases
 
 
@@ -543,11 +725,13 @@ def length_matrix(rnd):
 
 
 
-# Operations whose second operand must not be shrunk to zero. Dividing by
-# zero disagrees for its own reasons, so a reducer that wanders into it
-# turns a real arithmetic bug into the trivial one and reports the wrong
-# thing. This is the slippage a reducer has to be stopped from doing.
-NONZERO_SECOND = ("divf", "mod", "divmod")
+# Operands a reducer must not shrink to zero, by operation and position.
+# Dividing by zero disagrees for its own reasons, and so does a modulus of
+# zero, so a reducer that wanders into either turns a real arithmetic bug
+# into the trivial one and reports the wrong thing. This is the slippage a
+# reducer has to be stopped from doing.
+NONZERO_ARG = {"divf": {1}, "mod": {1}, "divmod": {1},
+               "powm": {2}, "powmc": {2}}
 
 
 BUDGET = 120
@@ -693,7 +877,7 @@ def disagrees(op, args):
 
 def shrink_failure(op, args):
     """Reduce a failing case, or return it unchanged if it will not shrink."""
-    skip = {1} if op in NONZERO_SECOND else set()
+    skip = NONZERO_ARG.get(op, set())
     try:
         return shrink(args, lambda a: disagrees(op, a), skip_zero=skip)
     except AssertionError:
