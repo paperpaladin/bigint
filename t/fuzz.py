@@ -40,22 +40,38 @@ SHIFT_EDGES = [0, 1, 31, 32, 33, 63, 64, 65, 95, 96, 127, 128,
 
 
 
-def rand_mag(rnd, cap=None):
-    lo, hi = rnd.choices(BUCKETS, WEIGHTS)[0]
-    if cap is not None and lo > cap:
-        lo, hi = 0, cap
-    bits = rnd.randint(lo, min(hi, cap) if cap is not None else hi)
+def from_bucket(rnd, bucket):
+    lo, hi = bucket
+    bits = rnd.randint(lo, hi)
     if bits <= 0:
         return 0
-    v = rnd.getrandbits(bits) | (1 << (bits - 1))
-    return v
+    return rnd.getrandbits(bits) | (1 << (bits - 1))
 
 
-def rand_val(rnd, cap=None, nonneg=False):
-    v = rand_mag(rnd, cap)
-    if not nonneg and v and rnd.random() < 0.5:
-        v = -v
-    return v
+def signed(rnd, v):
+    return -v if v and rnd.random() < 0.5 else v
+
+
+def rand_val(rnd):
+    return signed(rnd, from_bucket(rnd, rnd.choices(BUCKETS, WEIGHTS)[0]))
+
+
+def rand_pair(rnd):
+    """Two operands, deliberately mismatched in magnitude a third of the time.
+
+    Picking both buckets independently makes a 1-limb-against-500-limb pair
+    roughly a 1-in-120 event, and that pair is exactly where a loop bound
+    written in terms of the wrong operand's limb count shows up. So a third
+    of pairs are forced to opposite ends of the bucket list, in both orders.
+    """
+    if rnd.random() < 0.30:
+        lo = from_bucket(rnd, rnd.choice(BUCKETS[:4]))
+        hi = from_bucket(rnd, rnd.choice(BUCKETS[-2:]))
+        pair = [signed(rnd, lo), signed(rnd, hi)]
+        if rnd.random() < 0.5:
+            pair.reverse()
+        return pair
+    return [rand_val(rnd), rand_val(rnd)]
 
 
 def rand_shift(rnd):
@@ -181,7 +197,10 @@ def gen(rnd):
         return op, [str(rand_val(rnd)), str(rand_shift(rnd))]
     if op == "unhex":
         return op, [rand_hexlit(rnd)]
-    return op, [str(rand_val(rnd)) for _ in range(ARITY[op])]
+    if ARITY[op] == 2:
+        return op, [str(v) for v in rand_pair(rnd)]
+    return op, [str(rand_val(rnd))]
+
 
 
 CORPUS = [
