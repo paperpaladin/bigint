@@ -146,7 +146,7 @@ def ev(op, args):
         return str(vals[0] + vals[1])
     if op == "sub":
         return str(vals[0] - vals[1])
-    if op == "mul":
+    if op in ("mul", "mulsb", "mulk"):
         return str(vals[0] * vals[1])
     if op == "pow":
         x, e = vals
@@ -195,10 +195,12 @@ def ev(op, args):
 
 
 ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2,
-         "mul": 2, "divf": 2, "mod": 2, "divmod": 2,
+         "mul": 2, "mulsb": 2, "mulk": 2, "divf": 2, "mod": 2, "divmod": 2,
          "shl": 2, "shr": 2, "and": 2, "or": 2, "xor": 2,
          "hex": 1, "hexrt": 1, "unhex": 1, "pow": 2}
-OPS = list(ARITY)
+# mulsb and mulk are not picked directly: every "mul" case is emitted three
+# times, once per multiplication path, on identical operands.
+OPS = [o for o in ARITY if o not in ("mulsb", "mulk")]
 
 
 def rand_hexlit(rnd):
@@ -231,17 +233,24 @@ def rand_pow_exp(rnd, x):
 
 
 def gen(rnd):
+    """One draw, one or more cases."""
     op = rnd.choice(OPS)
     if op == "pow":
         x = rand_val(rnd)
-        return op, [str(x), str(rand_pow_exp(rnd, x))]
+        return [(op, [str(x), str(rand_pow_exp(rnd, x))])]
     if op in ("shl", "shr"):
-        return op, [str(rand_val(rnd)), str(rand_shift(rnd))]
+        return [(op, [str(rand_val(rnd)), str(rand_shift(rnd))])]
     if op == "unhex":
-        return op, [rand_hexlit(rnd)]
+        return [(op, [rand_hexlit(rnd)])]
+    if op == "mul":
+        # All three multiplication paths on the same operands. Python is the
+        # oracle for each, which also makes the schoolbook and Karatsuba
+        # implementations oracles for each other.
+        args = [str(v) for v in rand_pair(rnd)]
+        return [("mul", args), ("mulsb", args), ("mulk", args)]
     if ARITY[op] == 2:
-        return op, [str(v) for v in rand_pair(rnd)]
-    return op, [str(rand_val(rnd))]
+        return [(op, [str(v) for v in rand_pair(rnd)])]
+    return [(op, [str(rand_val(rnd))])]
 
 
 
@@ -403,8 +412,9 @@ MAG_PAIRS = [
     (2**128 - 1, 2**64 - 1),         # all-ones at both lengths
 ]
 
-BIN_OPS = ["add", "sub", "mul", "divf", "mod", "divmod",
+BIN_OPS = ["add", "sub", "mul", "mulsb", "mulk", "divf", "mod", "divmod",
            "and", "or", "xor", "cmp"]
+
 
 
 def sign_matrix():
@@ -466,7 +476,9 @@ def main():
     done = 0
     while done < iters:
         k = min(CHUNK, iters - done)
-        cases = [gen(rnd) for _ in range(k)]
+        cases = []
+        while len(cases) < k:
+            cases.extend(gen(rnd))
         a, f = run_chunk(cases)
         agree += a
         disagree += len(f)
