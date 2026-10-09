@@ -67,6 +67,14 @@ def ev(op, args):
         return str(vals[0] - vals[1])
     if op == "mul":
         return str(vals[0] * vals[1])
+    if op in ("divf", "mod", "divmod"):
+        if vals[1] == 0:
+            return "E divzero"
+        if op == "divf":
+            return str(vals[0] // vals[1])
+        if op == "mod":
+            return str(vals[0] % vals[1])
+        return "%d %d" % divmod(vals[0], vals[1])
     if op == "abs":
         return str(abs(vals[0]))
     if op == "cmp":
@@ -76,7 +84,7 @@ def ev(op, args):
 
 
 ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2,
-         "mul": 2}
+         "mul": 2, "divf": 2, "mod": 2, "divmod": 2}
 OPS = list(ARITY)
 
 
@@ -125,6 +133,33 @@ CORPUS = [
     ("mul", ["18446744073709551615", "18446744073709551615"]),
     ("mul", [str(10**500), str(10**500)]),
     ("mul", [str(2**16000 - 1), str(2**32 + 1)]),
+    # Division by zero must error, not crash, in every operand sign.
+    ("divf", ["0", "0"]), ("mod", ["0", "0"]), ("divmod", ["0", "0"]),
+    ("divf", ["7", "0"]), ("divf", ["-7", "0"]), ("mod", ["-7", "0"]),
+    # THE disagreement: C truncates toward zero, Python floors. All four
+    # sign combinations of 7 and 2, exhaustively, for all three operations.
+    ("divmod", ["7", "2"]), ("divmod", ["-7", "2"]),
+    ("divmod", ["7", "-2"]), ("divmod", ["-7", "-2"]),
+    ("divf", ["7", "2"]), ("divf", ["-7", "2"]),
+    ("divf", ["7", "-2"]), ("divf", ["-7", "-2"]),
+    ("mod", ["7", "2"]), ("mod", ["-7", "2"]),
+    ("mod", ["7", "-2"]), ("mod", ["-7", "-2"]),
+    # Exact division: the remainder is zero, so NO floor correction applies
+    # even though the signs differ. Getting this wrong is off-by-one on an
+    # exact quotient, which the sign cases above would not catch.
+    ("divmod", ["-8", "2"]), ("divmod", ["8", "-2"]),
+    ("divmod", ["-8", "-2"]), ("divmod", [str(-(10**500)), str(10**250)]),
+    # Knuth D corner cases: the add-back path, a divisor whose top limb is
+    # already normalised (s == 0), and one that needs a full 31-bit shift.
+    ("divmod", [str(2**64), str(2**32 + 1)]),
+    ("divmod", [str(2**96 - 1), str(2**64 - 1)]),
+    ("divmod", [str(2**16000 - 1), str(2**8000 + 1)]),
+    ("divmod", [str(2**16000 - 1), "3"]),
+    ("divmod", [str(2**16000 - 1), str(2**31)]),
+    ("divmod", [str(2**16000 - 1), str(2**16000 - 1)]),
+    ("divmod", [str(2**16000 - 1), str(2**16000)]),
+    ("divmod", ["1", str(10**500)]), ("divmod", ["-1", str(10**500)]),
+
 
 
 

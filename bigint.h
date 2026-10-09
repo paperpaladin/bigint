@@ -40,6 +40,13 @@ void bi_add(bi *r, const bi *a, const bi *b);
 void bi_sub(bi *r, const bi *a, const bi *b);
 void bi_mul(bi *r, const bi *a, const bi *b);
 
+/* Floor division and modulo with PYTHON's semantics, not C's: the quotient
+ * rounds toward negative infinity and the remainder takes the sign of the
+ * divisor, so bi_divmod(-7, 2) is (-4, 1) and not (-3, -1). Returns -1 and
+ * changes nothing if b is zero. q and rem may be NULL or alias a or b. */
+int bi_divmod(bi *q, bi *rem, const bi *a, const bi *b);
+
+
 
 void bi_neg(bi *r, const bi *a);   /* r = -a; r may alias a */
 void bi_abs(bi *r, const bi *a);   /* r = |a|; r may alias a */

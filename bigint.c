@@ -266,6 +266,159 @@ void bi_mul(bi *r, const bi *a, const bi *b)
     bi_free(&t);
 }
 
+static int nlz32(bi_limb x)
+{
+    int n = 0;
+    if (x == 0) return 32;
+    while (!(x & 0x80000000u)) { x <<= 1; n++; }
+    return n;
+}
+
+/* Truncating magnitude division: |Q| = |A| / |B|, |R| = |A| % |B|.
+ * B must be nonzero; Q and R must not alias A or B; either may be NULL.
+ *
+ * Knuth algorithm D, in the form given as divmnu in Hacker's Delight. The
+ * 32-bit limb choice pays off here: every intermediate (qhat * vn[i], the
+ * two-limb numerator, b * rhat) fits a uint64_t exactly, with nothing to
+ * spare, so there is no 128-bit arithmetic and no inline assembly.
+ *
+ * The qhat estimate can be one too large, and detecting that requires a
+ * signed borrow that goes negative, so the inner loop shifts int64_t values
+ * right. gcc defines that as arithmetic; the implementation is gcc-only and
+ * says so in the README rather than pretending to be portable. */
+static void udivmod(bi *Q, bi *R, const bi *A, const bi *B)
+{
+    const uint64_t b = (uint64_t)1 << 32;
+    int m = A->n, n = B->n, i, j, s;
+    bi_limb *un, *vn;
+
+    if (m < n) {                       /* |A| < |B|: quotient 0, remainder A */
+        if (Q) bi_set_zero(Q);
+        if (R) { bi_copy(R, A); R->sign = A->n ? 1 : 0; }
+        return;
+    }
+    if (n == 1) {                      /* single-limb divisor: one pass */
+        bi t;
+        bi_limb rem;
+        bi_init(&t);
+        bi_copy(&t, A);
+        t.sign = A->n ? 1 : 0;
+        rem = udiv_small(&t, B->d[0]);
+        if (R) { grow(R, 1); R->d[0] = rem; R->n = rem ? 1 : 0;
+                 R->sign = rem ? 1 : 0; }
+        if (Q) bi_swap(Q, &t);
+        bi_free(&t);
+        return;
+    }
+
+    /* Normalise the divisor so its top limb has its high bit set, which is
+     * what bounds the qhat error at 2. Shifting by (32 - s) with s == 0 is
+     * done in 64 bits on purpose: a 32-bit shift by 32 would be UB. */
+    s = nlz32(B->d[n - 1]);
+    vn = xrealloc(NULL, (size_t)n * sizeof *vn);
+    for (i = n - 1; i > 0; i--)
+        vn[i] = (B->d[i] << s) | (bi_limb)((uint64_t)B->d[i - 1] >> (32 - s));
+    vn[0] = B->d[0] << s;
+
+    un = xrealloc(NULL, (size_t)(m + 1) * sizeof *un);
+    un[m] = (bi_limb)((uint64_t)A->d[m - 1] >> (32 - s));
+    for (i = m - 1; i > 0; i--)
+        un[i] = (A->d[i] << s) | (bi_limb)((uint64_t)A->d[i - 1] >> (32 - s));
+    un[0] = A->d[0] << s;
+
+    if (Q) { grow(Q, m - n + 1); Q->n = m - n + 1; Q->sign = 1; }
+
+    for (j = m - n; j >= 0; j--) {
+        uint64_t num = (uint64_t)un[j + n] * b + un[j + n - 1];
+        uint64_t qhat = num / vn[n - 1];
+        uint64_t rhat = num - qhat * vn[n - 1];
+        int64_t k, t;
+
+        for (;;) {
+            /* Short-circuit matters: when qhat >= b the product below would
+             * overflow, so it must not be evaluated. */
+            if (qhat >= b || qhat * vn[n - 2] > b * rhat + un[j + n - 2]) {
+                qhat--;
+                rhat += vn[n - 1];
+                if (rhat < b) continue;
+            }
+            break;
+        }
+
+        k = 0;                         /* multiply and subtract */
+        for (i = 0; i < n; i++) {
+            uint64_t p = qhat * vn[i];
+            t = (int64_t)un[i + j] - k - (int64_t)(uint32_t)p;
+            un[i + j] = (bi_limb)t;
+            k = (int64_t)(p >> 32) - (t >> 32);
+        }
+        t = (int64_t)un[j + n] - k;
+        un[j + n] = (bi_limb)t;
+        if (Q) Q->d[j] = (bi_limb)qhat;
+
+        if (t < 0) {                   /* qhat was one too big: add back */
+            if (Q) Q->d[j]--;
+            k = 0;
+            for (i = 0; i < n; i++) {
+                uint64_t tt = (uint64_t)un[i + j] + vn[i] + (uint64_t)k;
+                un[i + j] = (bi_limb)tt;
+                k = (int64_t)(tt >> 32);
+            }
+            un[j + n] = (bi_limb)((uint64_t)un[j + n] + (uint64_t)k);
+        }
+    }
+
+    if (Q) norm(Q);
+    if (R) {
+        grow(R, n);
+        for (i = 0; i < n - 1; i++)
+            R->d[i] = (bi_limb)(((uint64_t)un[i] >> s) |
+                                ((uint64_t)un[i + 1] << (32 - s)));
+        R->d[n - 1] = un[n - 1] >> s;
+        R->n = n;
+        R->sign = 1;
+        norm(R);
+    }
+    free(un);
+    free(vn);
+}
+
+/* Floor division and modulo, with PYTHON's semantics, not C's.
+ *
+ * C truncates toward zero: -7 / 2 == -3, -7 % 2 == -1.
+ * Python floors toward negative infinity: -7 // 2 == -4, -7 % 2 == 1.
+ *
+ * Python is the oracle here, so Python's rule wins. The remainder always
+ * carries the sign of the divisor and satisfies a == q*b + r with
+ * 0 <= |r| < |b|. Returns -1 if b is zero, leaving q and rem untouched. */
+int bi_divmod(bi *q, bi *rem, const bi *a, const bi *b)
+{
+    bi tq, tr;
+
+    if (b->sign == 0) return -1;
+
+    bi_init(&tq);
+    bi_init(&tr);
+    udivmod(&tq, &tr, a, b);
+    tq.sign = tq.n ? a->sign * b->sign : 0;
+    tr.sign = tr.n ? a->sign : 0;
+
+    if (tr.n != 0 && a->sign * b->sign < 0) {
+        bi one;
+        bi_init(&one);
+        bi_set_i64(&one, 1);
+        bi_sub(&tq, &tq, &one);        /* round down instead of toward zero */
+        bi_add(&tr, &tr, b);           /* and move r into b's sign */
+        bi_free(&one);
+    }
+
+    if (q) bi_swap(q, &tq);
+    if (rem) bi_swap(rem, &tr);
+    bi_free(&tq);
+    bi_free(&tr);
+    return 0;
+}
+
 void bi_sub(bi *r, const bi *a, const bi *b)
 {
     bi nb = *b;                 /* read-only view of b with the sign flipped */
@@ -310,6 +463,7 @@ static int split(char *line, char *arg[3])
  * cannot carry an empty or space-containing operand. */
 static const struct { const char *name; int ary; } OPS[] = {
     { "dec", 1 }, { "neg", 1 }, { "cmp", 2 }, { "add", 2 }, { "sub", 2 }, { "abs", 1 }, { "mul", 2 },
+    { "divf", 2 }, { "mod", 2 }, { "divmod", 2 },
 };
 
 /* Decimal output cannot reveal an unnormalised result: bi_to_dec divides the
@@ -317,29 +471,46 @@ static const struct { const char *name; int ary; } OPS[] = {
  * identically to a trimmed one and the oracle sees nothing wrong. Only
  * bi_cmp notices, and by then the bug is months old. So the invariant is
  * checked here directly, on every result of every case the fuzzer runs. */
+static int normal(const bi *x)
+{
+    if (x->n < 0 || x->n > x->cap) return 0;
+    if (x->n == 0) return x->sign == 0;
+    return x->sign != 0 && x->d[x->n - 1] != 0;
+}
+
 static void emit(const bi *x)
 {
     char *s;
-    if (x->n < 0 || (x->n == 0 && x->sign != 0) ||
-        (x->n > 0 && (x->sign == 0 || x->d[x->n - 1] == 0))) {
-        puts("E unnormalised");
-        return;
-    }
+    if (!normal(x)) { puts("E unnormalised"); return; }
     s = bi_to_dec(x);
     puts(s);
     free(s);
 }
+
+static void emit2(const bi *x, const bi *y)
+{
+    char *s1, *s2;
+    if (!normal(x) || !normal(y)) { puts("E unnormalised"); return; }
+    s1 = bi_to_dec(x);
+    s2 = bi_to_dec(y);
+    printf("%s %s\n", s1, s2);
+    free(s1);
+    free(s2);
+
+}
+
 
 int main(void)
 {
     char *line = NULL;
     size_t cap = 0;
     ssize_t len;
-    bi a, b, r;
+    bi a, b, r, r2;
 
     bi_init(&a);
     bi_init(&b);
     bi_init(&r);
+    bi_init(&r2);
     while ((len = getline(&line, &cap, stdin)) > 0) {
         char *arg[4];
         int n, i, ary = -1;
@@ -365,6 +536,14 @@ int main(void)
         else if (!strcmp(op, "sub")) { bi_sub(&r, &a, &b); emit(&r); }
         else if (!strcmp(op, "abs")) { bi_abs(&r, &a); emit(&r); }
         else if (!strcmp(op, "mul")) { bi_mul(&r, &a, &b); emit(&r); }
+        else if (!strcmp(op, "divf")) {
+            if (bi_divmod(&r, NULL, &a, &b)) puts("E divzero"); else emit(&r);
+        } else if (!strcmp(op, "mod")) {
+            if (bi_divmod(NULL, &r, &a, &b)) puts("E divzero"); else emit(&r);
+        } else if (!strcmp(op, "divmod")) {
+            if (bi_divmod(&r, &r2, &a, &b)) puts("E divzero");
+            else { emit2(&r, &r2); }
+        }
 
 
 
@@ -372,6 +551,7 @@ int main(void)
     bi_free(&a);
     bi_free(&b);
     bi_free(&r);
+    bi_free(&r2);
 
     free(line);
     return 0;
