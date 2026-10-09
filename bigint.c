@@ -599,6 +599,62 @@ void bi_abs(bi *r, const bi *a)
     if (r->sign < 0) r->sign = 1;
 }
 
+static int hexval(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Hex is limb-aligned, so unlike decimal it is linear in both directions and
+ * shares no code with the quadratic base-10 loops. Accepts an optional sign,
+ * an optional 0x/0X prefix, either case, and leading zeros -- which is the
+ * subset of what Python's int(s, 16) takes; see the README for the rest. */
+int bi_set_hex(bi *x, const char *s)
+{
+    const char *p = s, *dig;
+    int sign = 1, ndig, nl, i;
+
+    if (*p == '-') { sign = -1; p++; }
+    else if (*p == '+') p++;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    dig = p;
+    for (; *p; p++)
+        if (hexval(*p) < 0) return -1;
+    ndig = (int)(p - dig);
+    if (ndig == 0) return -1;
+
+    nl = (ndig + 7) / 8;
+    grow(x, nl);
+    memset(x->d, 0, (size_t)nl * sizeof *x->d);
+    x->n = nl;
+    for (i = 0; i < ndig; i++)
+        x->d[i / 8] |= (bi_limb)hexval(dig[ndig - 1 - i]) << (4 * (i % 8));
+    x->sign = sign;
+    norm(x);
+    return 0;
+}
+
+/* Formatted exactly like Python's hex(): lowercase, "0x" prefix inside the
+ * sign, no leading zeros, "0x0" for zero. */
+char *bi_to_hex(const bi *x)
+{
+    char *buf = xrealloc(NULL, (size_t)x->n * 8 + 4);
+    char *p = buf;
+    int i;
+
+    if (x->sign < 0) *p++ = '-';
+    *p++ = '0';
+    *p++ = 'x';
+    if (x->n == 0) { *p++ = '0'; *p = 0; return buf; }
+    p += sprintf(p, "%x", x->d[x->n - 1]);
+    for (i = x->n - 2; i >= 0; i--)
+        p += sprintf(p, "%08x", x->d[i]);
+    *p = 0;
+    return buf;
+}
+
 /* ---------------------------------------------------------------- driver --
  * One operation per stdin line, one result line per input line, so the
  * differential fuzzer can push millions of cases through one process.
@@ -622,11 +678,13 @@ static int split(char *line, char *arg[3])
 /* Operation table: name, operand count. An operand-count mismatch is a parse
  * error, which is also what Python says about int("") -- the line protocol
  * cannot carry an empty or space-containing operand. */
-static const struct { const char *name; int ary; } OPS[] = {
-    { "dec", 1 }, { "neg", 1 }, { "cmp", 2 }, { "add", 2 }, { "sub", 2 }, { "abs", 1 }, { "mul", 2 },
-    { "divf", 2 }, { "mod", 2 }, { "divmod", 2 },
-    { "shl", 2 }, { "shr", 2 },
-    { "and", 2 }, { "or", 2 }, { "xor", 2 },
+static const struct { const char *name; int ary; int hexin; } OPS[] = {
+    { "dec", 1, 0 }, { "neg", 1, 0 }, { "abs", 1, 0 },
+    { "cmp", 2, 0 }, { "add", 2, 0 }, { "sub", 2, 0 }, { "mul", 2, 0 },
+    { "divf", 2, 0 }, { "mod", 2, 0 }, { "divmod", 2, 0 },
+    { "shl", 2, 0 }, { "shr", 2, 0 },
+    { "and", 2, 0 }, { "or", 2, 0 }, { "xor", 2, 0 },
+    { "hex", 1, 0 }, { "hexrt", 1, 0 }, { "unhex", 1, 1 },
 };
 
 /* Decimal output cannot reveal an unnormalised result: bi_to_dec divides the
@@ -684,7 +742,7 @@ int main(void)
     bi_init(&r2);
     while ((len = getline(&line, &cap, stdin)) > 0) {
         char *arg[4];
-        int n, i, ary = -1;
+        int n, i, ary = -1, hexin = 0;
         const char *op;
 
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
@@ -694,10 +752,15 @@ int main(void)
         op = arg[0];
 
         for (i = 0; i < (int)(sizeof OPS / sizeof *OPS); i++)
-            if (!strcmp(op, OPS[i].name)) { ary = OPS[i].ary; break; }
+            if (!strcmp(op, OPS[i].name)) {
+                ary = OPS[i].ary; hexin = OPS[i].hexin; break;
+            }
         if (ary < 0) { printf("E unknown op %s\n", op); continue; }
         if (n != ary + 1) { puts("E parse"); continue; }
-        if (bi_set_dec(&a, arg[1]) != 0) { puts("E parse"); continue; }
+        if ((hexin ? bi_set_hex(&a, arg[1]) : bi_set_dec(&a, arg[1])) != 0) {
+            puts("E parse");
+            continue;
+        }
         if (ary == 2 && bi_set_dec(&b, arg[2]) != 0) { puts("E parse"); continue; }
 
         if (!strcmp(op, "dec")) emit(&a);
@@ -726,6 +789,19 @@ int main(void)
         else if (!strcmp(op, "and")) { bi_and(&r, &a, &b); emit(&r); }
         else if (!strcmp(op, "or"))  { bi_or(&r, &a, &b);  emit(&r); }
         else if (!strcmp(op, "xor")) { bi_xor(&r, &a, &b); emit(&r); }
+        else if (!strcmp(op, "unhex")) emit(&a);
+        else if (!strcmp(op, "hex")) {
+            char *s = bi_to_hex(&a);
+            puts(s);
+            free(s);
+        } else if (!strcmp(op, "hexrt")) {
+            /* Full round trip: decimal in, hex out, hex back in, decimal
+             * out. Must be the identity at every length. */
+            char *s = bi_to_hex(&a);
+            if (bi_set_hex(&r, s) != 0) puts("E parse"); else emit(&r);
+            free(s);
+        }
+
 
 
 
