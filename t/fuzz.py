@@ -65,6 +65,8 @@ def ev(op, args):
         return str(vals[0] + vals[1])
     if op == "sub":
         return str(vals[0] - vals[1])
+    if op == "mul":
+        return str(vals[0] * vals[1])
     if op == "abs":
         return str(abs(vals[0]))
     if op == "cmp":
@@ -73,7 +75,8 @@ def ev(op, args):
     raise AssertionError("unknown op " + op)
 
 
-ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2}
+ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2,
+         "mul": 2}
 OPS = list(ARITY)
 
 
@@ -113,6 +116,16 @@ CORPUS = [
     ("sub", ["0", "0"]), ("sub", ["0", "-5"]), ("sub", ["-5", "0"]),
     ("sub", ["5", "5"]), ("sub", ["-5", "-5"]),
     ("abs", ["0"]), ("abs", ["-" + "9" * 300]),
+    # One limb against five hundred, both orders, and the limb-boundary
+    # squares where a 32x32 product is exactly one limb short of overflowing.
+    ("mul", ["0", "9" * 500]), ("mul", ["9" * 500, "0"]),
+    ("mul", ["1", "9" * 500]), ("mul", ["9" * 500, "1"]),
+    ("mul", ["-1", "9" * 500]), ("mul", ["9" * 500, "-1"]),
+    ("mul", ["4294967295", "4294967295"]), ("mul", ["4294967296", "4294967296"]),
+    ("mul", ["18446744073709551615", "18446744073709551615"]),
+    ("mul", [str(10**500), str(10**500)]),
+    ("mul", [str(2**16000 - 1), str(2**32 + 1)]),
+
 
 
 

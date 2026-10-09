@@ -230,6 +230,42 @@ void bi_add(bi *r, const bi *a, const bi *b)
     bi_free(&t);
 }
 
+/* |r| = |a| * |b|, schoolbook, O(n*m). r must not alias either operand.
+ *
+ * Row i writes slots i .. i+b->n, and no earlier row has touched slot
+ * i+b->n yet, so the row's final carry can be stored rather than added. */
+static void umul_school(bi *r, const bi *a, const bi *b)
+{
+    int i, j;
+
+    if (a->n == 0 || b->n == 0) { bi_set_zero(r); return; }
+    grow(r, a->n + b->n);
+    memset(r->d, 0, (size_t)(a->n + b->n) * sizeof *r->d);
+    for (i = 0; i < a->n; i++) {
+        uint64_t carry = 0;
+        bi_limb ai = a->d[i];
+        if (ai == 0) continue;
+        for (j = 0; j < b->n; j++) {
+            carry += (uint64_t)ai * b->d[j] + r->d[i + j];
+            r->d[i + j] = (bi_limb)carry;
+            carry >>= 32;
+        }
+        r->d[i + b->n] = (bi_limb)carry;
+    }
+    r->n = a->n + b->n;
+}
+
+void bi_mul(bi *r, const bi *a, const bi *b)
+{
+    bi t;
+    bi_init(&t);
+    umul_school(&t, a, b);
+    t.sign = a->sign * b->sign;
+    norm(&t);
+    bi_swap(r, &t);
+    bi_free(&t);
+}
+
 void bi_sub(bi *r, const bi *a, const bi *b)
 {
     bi nb = *b;                 /* read-only view of b with the sign flipped */
@@ -273,7 +309,7 @@ static int split(char *line, char *arg[3])
  * error, which is also what Python says about int("") -- the line protocol
  * cannot carry an empty or space-containing operand. */
 static const struct { const char *name; int ary; } OPS[] = {
-    { "dec", 1 }, { "neg", 1 }, { "cmp", 2 }, { "add", 2 }, { "sub", 2 }, { "abs", 1 },
+    { "dec", 1 }, { "neg", 1 }, { "cmp", 2 }, { "add", 2 }, { "sub", 2 }, { "abs", 1 }, { "mul", 2 },
 };
 
 /* Decimal output cannot reveal an unnormalised result: bi_to_dec divides the
@@ -328,6 +364,8 @@ int main(void)
         else if (!strcmp(op, "add")) { bi_add(&r, &a, &b); emit(&r); }
         else if (!strcmp(op, "sub")) { bi_sub(&r, &a, &b); emit(&r); }
         else if (!strcmp(op, "abs")) { bi_abs(&r, &a); emit(&r); }
+        else if (!strcmp(op, "mul")) { bi_mul(&r, &a, &b); emit(&r); }
+
 
 
     }
