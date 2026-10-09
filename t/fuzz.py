@@ -321,6 +321,49 @@ CORPUS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Fuzz case class: every sign combination of every binary operation.
+#
+# Random generation gives each of the four combinations about a quarter of the
+# cases, which is fine on average and no use at all when a specific
+# combination of a specific operation is the broken one. This enumerates them.
+
+SIGN_PAIRS = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+MAG_PAIRS = [
+    (3, 7),                          # both single-limb
+    (7, 3),
+    (4294967296, 4294967295),        # straddling a limb boundary
+    (18446744073709551615, 3),       # 2 limbs against 1
+    (10**100, 7),                    # 11 limbs against 1
+    (1, 2**16000 - 1),               # 1 limb against 500
+    (2**16000 - 1, 2**31 + 1),       # 500 limbs against 1
+    (2**64, 2**32),                  # exact powers, exact division
+    (2**128 - 1, 2**64 - 1),         # all-ones at both lengths
+]
+
+BIN_OPS = ["add", "sub", "mul", "divf", "mod", "divmod",
+           "and", "or", "xor", "cmp"]
+
+
+def sign_matrix():
+    cases = []
+    for op in BIN_OPS:
+        for x, y in MAG_PAIRS:
+            for sx, sy in SIGN_PAIRS:
+                cases.append((op, [str(sx * x), str(sy * y)]))
+    for op in ("shl", "shr"):
+        for x, _ in MAG_PAIRS:
+            for sx in (1, -1):
+                for c in ("0", "1", "33", "64", "100", "-1"):
+                    cases.append((op, [str(sx * x), c]))
+    for x in (2, 3, 7, 10, 4294967295, 4294967296, 2**64 - 1):
+        for sx in (1, -1):
+            for e in ("0", "1", "2", "3", "17", "-1"):
+                cases.append(("pow", [str(sx * x), e]))
+    return cases
+
+
 def run_chunk(cases):
     """cases: list of (op, args). Returns (agree, failures)."""
     lines = []
@@ -352,10 +395,12 @@ def main():
     failures = []
 
     # The fixed corpus first: boundaries, degenerate inputs, past regressions.
-    a, f = run_chunk(CORPUS)
-    agree += a
-    disagree += len(f)
-    failures += [("corpus",) + x for x in f]
+    for name, batch in (("corpus", CORPUS), ("signs", sign_matrix())):
+        a, f = run_chunk(batch)
+        agree += a
+        disagree += len(f)
+        failures += [(name,) + x for x in f]
+
 
     done = 0
     while done < iters:
