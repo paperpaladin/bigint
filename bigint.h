@@ -68,7 +68,15 @@ int bi_divmod(bi *q, bi *rem, const bi *a, const bi *b);
 int bi_shl(bi *r, const bi *a, const bi *k);
 int bi_shr(bi *r, const bi *a, const bi *k);
 
+/* Bitwise, on Python's infinite two's-complement model: -1 & 5 == 5,
+ * -1 | 0 == -1, -1 ^ -1 == 0. Not C's fixed-width behaviour, and not
+ * sign-magnitude bit twiddling, which would get every negative case wrong. */
+void bi_and(bi *r, const bi *a, const bi *b);
+void bi_or (bi *r, const bi *a, const bi *b);
+void bi_xor(bi *r, const bi *a, const bi *b);
+
 int bi_bits(const bi *x);   /* bit length of |x|; 0 for zero, as Python */
+
 
 
 

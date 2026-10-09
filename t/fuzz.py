@@ -88,6 +88,12 @@ def ev(op, args):
         return str(vals[0] - vals[1])
     if op == "mul":
         return str(vals[0] * vals[1])
+    if op == "and":
+        return str(vals[0] & vals[1])
+    if op == "or":
+        return str(vals[0] | vals[1])
+    if op == "xor":
+        return str(vals[0] ^ vals[1])
     if op in ("shl", "shr"):
         x, c = vals
         if c < 0:
@@ -117,7 +123,7 @@ def ev(op, args):
 
 ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2,
          "mul": 2, "divf": 2, "mod": 2, "divmod": 2,
-         "shl": 2, "shr": 2}
+         "shl": 2, "shr": 2, "and": 2, "or": 2, "xor": 2}
 OPS = list(ARITY)
 
 
@@ -210,6 +216,22 @@ CORPUS = [
     # quadratic -- so the success side is checked at 64 Kbit instead.
     ("shl", ["1", "65535"]), ("shl", ["1", str(MAX_BITS)]),
     ("shl", ["1", str(MAX_BITS + 1)]), ("shl", ["1", str(2**70)]),
+    # Bitwise on Python's infinite two's-complement model. Sign-magnitude
+    # bit twiddling gets all of these wrong.
+    ("and", ["-1", "5"]), ("and", ["5", "-1"]), ("and", ["-1", "-1"]),
+    ("or", ["-1", "0"]), ("or", ["0", "-1"]), ("xor", ["-1", "-1"]),
+    ("xor", ["-1", "0"]), ("and", ["-2", "-3"]), ("or", ["-2", "-3"]),
+    ("xor", ["-2", "-3"]), ("and", ["0", "0"]), ("or", ["0", "0"]),
+    ("and", ["-4294967296", "4294967295"]),
+    ("or", ["-4294967296", "4294967295"]),
+    ("xor", [str(-(2**64)), str(2**64 - 1)]),
+    ("and", [str(-(2**16000)), str(2**16000 - 1)]),
+    ("or", [str(-(2**16000)), "255"]), ("and", ["-1", str(2**16000 - 1)]),
+    # Operands of very different length, with the shorter one negative so
+    # the sign extension has to run the whole way up.
+    ("and", ["-3", str(2**16000 - 1)]), ("or", ["-3", str(2**16000 - 1)]),
+    ("xor", ["-3", str(2**16000 - 1)]), ("and", [str(2**16000 - 1), "-3"]),
+
 
 
 
