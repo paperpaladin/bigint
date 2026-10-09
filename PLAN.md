@@ -44,7 +44,8 @@ fault injection (commit 16).
 1. **Python's native `int`**, via `t/fuzz.py`. It is arbitrary-precision, it
    is the reference implementation for every operation here, and there is zero
    ambiguity about the right answer. Nothing about it is under this project's
-   control.
+   control. Currently 7,314,868 cases across 68 seeds, zero disagreements.
+
 2. **Schoolbook multiply against Karatsuba multiply.** Two independent
    implementations of one function, checked against each other on identical
    operands as well as against Python. Weaker than Python -- a shared
@@ -135,9 +136,12 @@ function's output is its arguments.
       why: every case currently depends on `bi_set_dec` being correct. A
            parser bug that is symmetric with a formatter bug cancels out and
            the differential run stays green.
-- [ ] 19 run the fuzzer under valgrind as well as ASan, on a short seed
-      why: ASan misses uninitialised reads; `grow()` hands back uninitialised
-           limbs and the only thing stopping them being read is `n`
+- [ ] 19 wire valgrind into the Makefile alongside ASan, on a short seed
+      why: ASan misses uninitialised reads, and `grow()` hands back
+           uninitialised limbs with only `n` stopping them being read. A
+           400-case run with `--track-origins=yes` is clean, but it was run
+           by hand once and nothing re-checks it.
+
 - [ ] 20 a `bi_check()` exported invariant checker, called from the driver on
       every operand as well as every result
       why: the current check only sees results, so an unnormalised value that

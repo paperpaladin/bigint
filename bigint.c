@@ -20,10 +20,8 @@
 
 #include "bigint.h"
 
-#define LIMB_BITS 32
-#define LIMB_MAX  0xffffffffu
-
-static void *xrealloc(void *p, size_t n)
+static void *xrealloc
+(void *p, size_t n)
 {
     void *q = realloc(p, n ? n : 1);
     if (!q) { fputs("bigint: out of memory\n", stderr); exit(70); }

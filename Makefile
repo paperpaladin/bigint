@@ -14,7 +14,6 @@ test-asan:
 	      -o bigint-asan bigint.c
 	@BIGINT=./bigint-asan t/run.sh 15000
 
-
 # Where Karatsuba starts paying, measured. BI_KARATSUBA_CUTOFF comes from here.
 bench: bigint
 	@echo "One Karatsuba level vs schoolbook (cutoff = n): the break-even point"
@@ -27,10 +26,8 @@ bench: bigint
 	@for n in 96 128 256 512 1024 2048 4096; do echo "mulbench $$n 0"; \
 	 done | ./bigint
 
-
 clean:
 	rm -f bigint bigint-asan
-	rm -rf scratch/*
 
 .PHONY: test test-asan bench clean
 
