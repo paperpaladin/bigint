@@ -61,13 +61,15 @@ def ev(op, args):
         return str(vals[0])
     if op == "neg":
         return str(-vals[0])
+    if op == "add":
+        return str(vals[0] + vals[1])
     if op == "cmp":
         x, y = vals
         return str((x > y) - (x < y))
     raise AssertionError("unknown op " + op)
 
 
-ARITY = {"dec": 1, "neg": 1, "cmp": 2}
+ARITY = {"dec": 1, "neg": 1, "cmp": 2, "add": 2}
 OPS = list(ARITY)
 
 
@@ -93,6 +95,13 @@ CORPUS = [
     ("cmp", ["18446744073709551616", "18446744073709551616"]),
     ("cmp", ["1" + "0" * 400, "1" + "0" * 400]),
     ("cmp", ["1" + "0" * 400, "9" * 400]),
+    # Carry propagating the full length of the number, in both directions.
+    ("add", ["9" * 500, "1"]), ("add", ["1", "9" * 500]),
+    ("add", ["-" + "9" * 500, "-1"]), ("add", ["9" * 500, "-1"]),
+    ("add", ["4294967295", "1"]), ("add", ["18446744073709551615", "1"]),
+    ("add", ["0", "0"]), ("add", ["0", "-5"]), ("add", ["-5", "0"]),
+    ("add", ["5", "-5"]), ("add", ["-5", "5"]),
+
 
 ]
 
