@@ -63,13 +63,17 @@ def ev(op, args):
         return str(-vals[0])
     if op == "add":
         return str(vals[0] + vals[1])
+    if op == "sub":
+        return str(vals[0] - vals[1])
+    if op == "abs":
+        return str(abs(vals[0]))
     if op == "cmp":
         x, y = vals
         return str((x > y) - (x < y))
     raise AssertionError("unknown op " + op)
 
 
-ARITY = {"dec": 1, "neg": 1, "cmp": 2, "add": 2}
+ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2}
 OPS = list(ARITY)
 
 
@@ -101,6 +105,15 @@ CORPUS = [
     ("add", ["4294967295", "1"]), ("add", ["18446744073709551615", "1"]),
     ("add", ["0", "0"]), ("add", ["0", "-5"]), ("add", ["-5", "0"]),
     ("add", ["5", "-5"]), ("add", ["-5", "5"]),
+    # Borrow chains, and subtraction whose result is many limbs shorter than
+    # either operand: the leading zero limbs must be trimmed or bi_cmp lies.
+    ("sub", ["1" + "0" * 500, "1"]), ("sub", ["1" + "0" * 500, "9" * 500]),
+    ("sub", ["9" * 500, "9" * 500]), ("sub", [str(10**500), str(10**500 - 1)]),
+    ("sub", ["4294967296", "1"]), ("sub", ["18446744073709551616", "1"]),
+    ("sub", ["0", "0"]), ("sub", ["0", "-5"]), ("sub", ["-5", "0"]),
+    ("sub", ["5", "5"]), ("sub", ["-5", "-5"]),
+    ("abs", ["0"]), ("abs", ["-" + "9" * 300]),
+
 
 
 ]

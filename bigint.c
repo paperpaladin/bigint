@@ -230,10 +230,23 @@ void bi_add(bi *r, const bi *a, const bi *b)
     bi_free(&t);
 }
 
+void bi_sub(bi *r, const bi *a, const bi *b)
+{
+    bi nb = *b;                 /* read-only view of b with the sign flipped */
+    nb.sign = -nb.sign;
+    bi_add(r, a, &nb);
+}
+
 void bi_neg(bi *r, const bi *a)
 {
     bi_copy(r, a);
     r->sign = -a->sign;
+}
+
+void bi_abs(bi *r, const bi *a)
+{
+    bi_copy(r, a);
+    if (r->sign < 0) r->sign = 1;
 }
 
 /* ---------------------------------------------------------------- driver --
@@ -260,10 +273,26 @@ static int split(char *line, char *arg[3])
  * error, which is also what Python says about int("") -- the line protocol
  * cannot carry an empty or space-containing operand. */
 static const struct { const char *name; int ary; } OPS[] = {
-    { "dec", 1 }, { "neg", 1 }, { "cmp", 2 }, { "add", 2 },
+    { "dec", 1 }, { "neg", 1 }, { "cmp", 2 }, { "add", 2 }, { "sub", 2 }, { "abs", 1 },
 };
 
-static void emit(const bi *x) { char *s = bi_to_dec(x); puts(s); free(s); }
+/* Decimal output cannot reveal an unnormalised result: bi_to_dec divides the
+ * value down and ignores leading zero limbs, so an untrimmed answer prints
+ * identically to a trimmed one and the oracle sees nothing wrong. Only
+ * bi_cmp notices, and by then the bug is months old. So the invariant is
+ * checked here directly, on every result of every case the fuzzer runs. */
+static void emit(const bi *x)
+{
+    char *s;
+    if (x->n < 0 || (x->n == 0 && x->sign != 0) ||
+        (x->n > 0 && (x->sign == 0 || x->d[x->n - 1] == 0))) {
+        puts("E unnormalised");
+        return;
+    }
+    s = bi_to_dec(x);
+    puts(s);
+    free(s);
+}
 
 int main(void)
 {
@@ -297,6 +326,9 @@ int main(void)
         else if (!strcmp(op, "neg")) { bi_neg(&r, &a); emit(&r); }
         else if (!strcmp(op, "cmp")) printf("%d\n", bi_cmp(&a, &b));
         else if (!strcmp(op, "add")) { bi_add(&r, &a, &b); emit(&r); }
+        else if (!strcmp(op, "sub")) { bi_sub(&r, &a, &b); emit(&r); }
+        else if (!strcmp(op, "abs")) { bi_abs(&r, &a); emit(&r); }
+
 
     }
     bi_free(&a);
