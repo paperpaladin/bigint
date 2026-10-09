@@ -90,6 +90,19 @@ def ev(op, args):
         return str(vals[0] - vals[1])
     if op == "mul":
         return str(vals[0] * vals[1])
+    if op == "pow":
+        x, e = vals
+        if e < 0:
+            return "E negpow"
+        if x == 0:
+            return "1" if e == 0 else "0"
+        if x == 1:
+            return "1"
+        if x == -1:
+            return "1" if e % 2 == 0 else "-1"
+        if x.bit_length() * e > MAX_BITS:
+            return "E toobig"
+        return str(x ** e)
     if op == "and":
         return str(vals[0] & vals[1])
     if op == "or":
@@ -126,7 +139,7 @@ def ev(op, args):
 ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2,
          "mul": 2, "divf": 2, "mod": 2, "divmod": 2,
          "shl": 2, "shr": 2, "and": 2, "or": 2, "xor": 2,
-         "hex": 1, "hexrt": 1, "unhex": 1}
+         "hex": 1, "hexrt": 1, "unhex": 1, "pow": 2}
 OPS = list(ARITY)
 
 
@@ -145,8 +158,25 @@ def rand_hexlit(rnd):
     return ("+" + s) if rnd.random() < 0.1 else s
 
 
+def rand_pow_exp(rnd, x):
+    """Exponents that stay out of the 'legal but takes a minute to print'
+    band: bigint's ceiling is 16 Mbit, but quadratic base conversion means
+    anything over ~30 Kbit dominates the whole run."""
+    r = rnd.random()
+    if r < 0.08:
+        return -rnd.randint(1, 100)
+    if r < 0.20:
+        return rnd.choice([0, 1, 2, 3])
+    if r < 0.30 or abs(x) <= 1:
+        return rnd.choice([MAX_BITS, MAX_BITS + 1, 2**70, 10**30])
+    return rnd.randint(0, max(1, 30000 // x.bit_length()))
+
+
 def gen(rnd):
     op = rnd.choice(OPS)
+    if op == "pow":
+        x = rand_val(rnd)
+        return op, [str(x), str(rand_pow_exp(rnd, x))]
     if op in ("shl", "shr"):
         return op, [str(rand_val(rnd)), str(rand_shift(rnd))]
     if op == "unhex":
@@ -264,6 +294,21 @@ CORPUS = [
     ("unhex", ["zz"]), ("unhex", ["12 34"]),
 ] + [("hexrt", [str((-1) ** k * (2**k - 1))]) for k in range(0, 300)] + [
     ("hexrt", ["0"]), ("hexrt", [str(2**16000 - 1)]),
+    # 0 ** 0 is 1. Everything else about zero and one in an exponent.
+    ("pow", ["0", "0"]), ("pow", ["0", "1"]), ("pow", ["0", "500"]),
+    ("pow", ["1", "0"]), ("pow", ["-1", "0"]), ("pow", ["5", "0"]),
+    ("pow", ["-5", "0"]), ("pow", ["-5", "1"]), ("pow", ["-5", "2"]),
+    ("pow", ["-5", "3"]), ("pow", ["-1", "1"]), ("pow", ["-1", "2"]),
+    # 1 and -1 answer instantly whatever the exponent, so their fast path
+    # must agree with the parity rule rather than falling into the ceiling.
+    ("pow", ["1", str(10**30)]), ("pow", ["-1", str(10**30)]),
+    ("pow", ["-1", str(10**30 + 1)]), ("pow", ["0", str(10**30)]),
+    ("pow", ["2", "-1"]), ("pow", ["0", "-1"]), ("pow", ["-1", "-2"]),
+    ("pow", ["2", str(MAX_BITS)]), ("pow", ["2", str(MAX_BITS + 1)]),
+    ("pow", ["2", "16000"]), ("pow", ["-2", "16001"]),
+    ("pow", [str(2**64 - 1), "3"]), ("pow", [str(-(2**64)), "5"]),
+    ("pow", ["10", "500"]), ("pow", ["-10", "501"]),
+
 
 
 
