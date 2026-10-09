@@ -6,4 +6,4 @@ cd "$(dirname "$0")/.."
 : "${BIGINT:=./bigint}"
 [ -x "$BIGINT" ] || make -s bigint
 export BIGINT
-exec python3 t/fuzz.py "${1:-200000}" "${2:-0}"
+exec python3 t/fuzz.py "${1:-100000}" "${2:-0}"

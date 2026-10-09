@@ -141,6 +141,23 @@ char *bi_to_dec(const bi *x)
     return buf;
 }
 
+/* Magnitude comparison. -1, 0, +1 for |a| <, ==, > |b|. */
+static int ucmp(const bi *a, const bi *b)
+{
+    int i;
+    if (a->n != b->n) return a->n < b->n ? -1 : 1;
+    for (i = a->n - 1; i >= 0; i--)
+        if (a->d[i] != b->d[i]) return a->d[i] < b->d[i] ? -1 : 1;
+    return 0;
+}
+
+int bi_cmp(const bi *a, const bi *b)
+{
+    if (a->sign != b->sign) return a->sign < b->sign ? -1 : 1;
+    if (a->sign == 0) return 0;
+    return a->sign * ucmp(a, b);
+}
+
 void bi_neg(bi *r, const bi *a)
 {
     if (r != a) {
@@ -175,7 +192,7 @@ static int split(char *line, char *arg[3])
  * error, which is also what Python says about int("") -- the line protocol
  * cannot carry an empty or space-containing operand. */
 static const struct { const char *name; int ary; } OPS[] = {
-    { "dec", 1 }, { "neg", 1 },
+    { "dec", 1 }, { "neg", 1 }, { "cmp", 2 },
 };
 
 static void emit(const bi *x) { char *s = bi_to_dec(x); puts(s); free(s); }
@@ -185,9 +202,10 @@ int main(void)
     char *line = NULL;
     size_t cap = 0;
     ssize_t len;
-    bi a, r;
+    bi a, b, r;
 
     bi_init(&a);
+    bi_init(&b);
     bi_init(&r);
     while ((len = getline(&line, &cap, stdin)) > 0) {
         char *arg[4];
@@ -205,12 +223,16 @@ int main(void)
         if (ary < 0) { printf("E unknown op %s\n", op); continue; }
         if (n != ary + 1) { puts("E parse"); continue; }
         if (bi_set_dec(&a, arg[1]) != 0) { puts("E parse"); continue; }
+        if (ary == 2 && bi_set_dec(&b, arg[2]) != 0) { puts("E parse"); continue; }
 
         if (!strcmp(op, "dec")) emit(&a);
         else if (!strcmp(op, "neg")) { bi_neg(&r, &a); emit(&r); }
+        else if (!strcmp(op, "cmp")) printf("%d\n", bi_cmp(&a, &b));
     }
     bi_free(&a);
+    bi_free(&b);
     bi_free(&r);
+
     free(line);
     return 0;
 }

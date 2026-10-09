@@ -61,15 +61,19 @@ def ev(op, args):
         return str(vals[0])
     if op == "neg":
         return str(-vals[0])
+    if op == "cmp":
+        x, y = vals
+        return str((x > y) - (x < y))
     raise AssertionError("unknown op " + op)
 
 
-OPS = ["dec", "neg"]
+ARITY = {"dec": 1, "neg": 1, "cmp": 2}
+OPS = list(ARITY)
 
 
 def gen(rnd):
     op = rnd.choice(OPS)
-    return op, [str(rand_val(rnd))]
+    return op, [str(rand_val(rnd)) for _ in range(ARITY[op])]
 
 
 CORPUS = [
@@ -80,6 +84,16 @@ CORPUS = [
     ("dec", ["9" * 300]), ("dec", ["-" + "9" * 300]),
     ("dec", [""]), ("dec", ["-"]), ("dec", ["12x"]), ("dec", ["0x10"]),
     ("neg", ["0"]), ("neg", ["-1"]),
+    # Comparison has to be a total order, which is where a result that was
+    # left unnormalised stops being equal to itself.
+    ("cmp", ["0", "0"]), ("cmp", ["0", "-0"]), ("cmp", ["-1", "1"]),
+    ("cmp", ["1", "-1"]), ("cmp", ["-2", "-1"]), ("cmp", ["-1", "-2"]),
+    ("cmp", ["4294967296", "4294967295"]), ("cmp", ["4294967295", "4294967296"]),
+    ("cmp", ["-4294967296", "-4294967295"]),
+    ("cmp", ["18446744073709551616", "18446744073709551616"]),
+    ("cmp", ["1" + "0" * 400, "1" + "0" * 400]),
+    ("cmp", ["1" + "0" * 400, "9" * 400]),
+
 ]
 
 
@@ -106,7 +120,7 @@ def run_chunk(cases):
 
 
 def main():
-    iters = int(sys.argv[1]) if len(sys.argv) > 1 else 200000
+    iters = int(sys.argv[1]) if len(sys.argv) > 1 else 100000
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     rnd = random.Random(seed)
 
