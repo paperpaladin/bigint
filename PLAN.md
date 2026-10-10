@@ -366,7 +366,45 @@ function's output is its arguments.
             plausible wrong residue for a non-invertible base is worse than
             refusing. The refusal is the third documented deviation from
             the oracle and `t/fuzz.py` models it.
-- [ ] 22 `bi_gcd` by binary GCD, against `math.gcd`
+- [x] 22 `bi_gcd` by binary GCD, against `math.gcd`
+      why: the oracle is free and exact, and the algorithm needs nothing
+           the library does not already have: shifts, a magnitude compare
+           and a subtraction
+      files: bigint.c bigint.h t/fuzz.py
+      done: Stein's algorithm. Pull out the twos the operands share, keep
+            both odd, replace the larger with the difference until one is
+            zero, put the shared twos back. `utz()` is the only new helper.
+            `gcd` joins the sign matrix, so all four sign combinations of
+            all nine magnitude pairs are enumerated rather than sampled.
+      proves: `make test` is 107972 agree, 0 disagree. Eight mutants,
+              eight dead against `t/run.sh 3000 0`, which is 10970 cases
+              clean, and against the 72 gcd cases in the corpus and the
+              sign matrix: shared twos never put back 39 and 18, the shift
+              taken from one operand instead of the smaller 68 and 24, the
+              difference not made odd again inside the loop does not
+              finish, the zero fast path keeping the sign 6 and 1, the
+              result given the first operand's sign 83 and 23, the
+              comparison reversed does not finish, the loop stopped a limb
+              early 131 and 30, both operands not made odd before the loop
+              does not finish.
+      found: a defect in the mutation harness, and the kind METHOD already
+             warns about. It asserted that an anchor was PRESENT in the
+             source and replaced the first occurrence, and
+             `t.sign = t.n ? 1 : 0;` occurs in `bi_shr` as well as in
+             `bi_gcd`. So the sign mutant mutated `bi_shr`, the suite went
+             red with 24 shift disagreements, the 72 gcd cases stayed
+             green, and the pair reads exactly like a kill. It only looked
+             wrong because a surviving mutant and a red suite cannot both
+             be true of the same function. The anchor must be unique, and
+             the runner asserts that now; with a unique anchor the real
+             mutant is 83 and 23.
+      note: three of the eight do not return a wrong answer, they stop
+            terminating. Dropping either shift leaves subtractive Euclid,
+            which is correct arithmetic and 2^8000 steps on the corpus
+            pair, and reversing the comparison hands `usub` the subtraction
+            its comment says it does not accept. A hang is a dead mutant
+            and is recorded as a different kind of evidence from a wrong
+            answer.
 - [ ] 23 `bi_isqrt` by Newton iteration, against `math.isqrt`
       note: 21 to 23 are all "second implementation of something Python
             already has", the cheapest kind of work here: the oracle

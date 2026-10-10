@@ -446,6 +446,58 @@ And checking the exponent before the modulus is a single case, `powm 2 -1 0`,
 which is in the corpus only because Python was asked which error it reports
 first.
 
+## Greatest common divisor
+
+`gcd a b` is Python's `math.gcd`, by Stein's binary algorithm: strip the twos
+the two operands share, keep both odd, and replace the larger with their
+difference until one of them is zero. Euclid would have reused `bi_divmod`
+and is the obvious alternative, but a division per step is the expensive way
+to do this, and `math.gcd` is exact either way, so choosing the cheaper
+algorithm costs nothing in testability.
+
+Signs go first, because `math.gcd` drops them: `gcd(-12, -18)` is 6 and
+`gcd(0, 0)` is 0 rather than an error.
+
+Three input shapes get their own corpus entries, because a random pair of
+magnitudes reaches none of them often:
+
+```
+  gcd(2^100, 2^60)         both operands pure powers of two, so the whole
+                           answer comes from the shared-twos shift and the
+                           loop does nothing
+  gcd(2^16000-1, 2^8000-1) an answer that is itself 250 limbs long, since
+                           gcd(2^a-1, 2^b-1) is 2^gcd(a,b)-1
+  gcd(832040, 514229)      consecutive Fibonacci numbers, which is Euclid's
+                           worst case and a long run of single-bit steps
+                           here too
+```
+
+Eight mutants, eight dead, against `t/run.sh 3000 0` (10,970 cases clean)
+and against the 72 `gcd` cases in the corpus and the sign matrix:
+
+| mutant | suite | the 72 gcd cases |
+| --- | --- | --- |
+| never put the shared twos back | 39 | 18 |
+| take the shift from one operand instead of the smaller | 68 | 24 |
+| stop making the difference odd again inside the loop | does not finish | does not finish |
+| let the zero fast path keep the sign | 6 | 1 |
+| give the result the first operand's sign | 83 | 23 |
+| reverse the comparison that decides which to subtract | does not finish | does not finish |
+| stop the loop a limb early | 131 | 30 |
+| skip making both operands odd before the loop | does not finish | does not finish |
+
+Three of the eight do not produce a wrong answer, they stop terminating.
+Dropping either shift turns Stein's algorithm into subtractive Euclid, which
+is correct and takes 2^8000 steps on the corpus pair, and reversing the
+comparison hands `usub` a subtraction it is documented not to accept. A
+mutant that hangs is still a dead mutant, but it is a different kind of
+evidence from a wrong answer and is written down as one.
+
+The fourth one, the zero fast path, is the cheapest of the eight: `gcd 0 -7`
+and nothing else. `math.gcd` is non-negative whatever its operands, and a
+sign-magnitude implementation that takes a shortcut for a zero operand
+carries the other operand's sign straight out.
+
 ## What does NOT work
 
 Plainly, because a README that only lists successes is not finished.
@@ -509,7 +561,7 @@ only a rare operand shape reaches is therefore still possible: the gate
 proves the common paths are clean, not all of them.
 
 
-Not implemented at all: GCD, integer square root, primality testing,
+Not implemented at all: integer square root, primality testing,
 conversion to or from floating point, bases other than 10 and 16, bitwise
 NOT as a named operation (it is `-x - 1`), and bit counting.
 

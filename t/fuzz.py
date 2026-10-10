@@ -10,6 +10,7 @@ million cases cost one process rather than a million.
 
 Usage: fuzz.py [CASES] [SEED]
 """
+import math
 import os
 import random
 import shlex
@@ -261,6 +262,9 @@ def ev(op, args):
         if op == "mod":
             return str(vals[0] % vals[1])
         return "%d %d" % divmod(vals[0], vals[1])
+    if op == "gcd":
+        # math.gcd drops both signs and answers 0 for gcd(0, 0).
+        return str(math.gcd(vals[0], vals[1]))
     if op == "abs":
         return str(abs(vals[0]))
     if op == "cmp":
@@ -273,7 +277,7 @@ ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2,
          "mul": 2, "mulsb": 2, "mulk": 2, "divf": 2, "mod": 2, "divmod": 2,
          "shl": 2, "shr": 2, "and": 2, "or": 2, "xor": 2,
          "hex": 1, "hexrt": 1, "unhex": 1, "pow": 2,
-         "powm": 3, "powmc": 3}
+         "powm": 3, "powmc": 3, "gcd": 2}
 # mulsb and mulk are not picked directly: every "mul" case is emitted three
 # times, once per multiplication path, on identical operands.
 #
@@ -616,6 +620,39 @@ CORPUS = [
     ("powmc", ["3", "65537", "1000000007"]),
     ("powmc", ["3", "0", "1000000007"]), ("powmc", ["3", "1", "7"]),
     ("powmc", [str(M2048 - 3), "65537", str(M2048)]),
+    # --- gcd ----------------------------------------------------------
+    # Zero on either side, where the answer is the other operand's
+    # magnitude, and gcd(0, 0), which math.gcd answers 0 rather than
+    # refusing.
+    ("gcd", ["0", "0"]), ("gcd", ["0", "7"]), ("gcd", ["7", "0"]),
+    ("gcd", ["0", "-7"]), ("gcd", ["-7", "0"]), ("gcd", ["-0", "0"]),
+    # Both signs, because math.gcd drops them and a sign-magnitude
+    # implementation could easily carry one through.
+    ("gcd", ["12", "18"]), ("gcd", ["-12", "18"]), ("gcd", ["12", "-18"]),
+    ("gcd", ["-12", "-18"]), ("gcd", ["-1", "-1"]),
+    # Equal operands, one dividing the other, and coprime pairs.
+    ("gcd", ["7", "7"]), ("gcd", ["-7", "7"]), ("gcd", ["6", "36"]),
+    ("gcd", ["36", "6"]), ("gcd", ["17", "19"]), ("gcd", ["1", "1"]),
+    ("gcd", ["1", str(2**16000 - 1)]), ("gcd", [str(2**16000 - 1), "1"]),
+    # Powers of two on both sides, which is the path that pulls out the
+    # shared twos and then has nothing left to do. Also one even against
+    # one odd, where only one side shifts.
+    ("gcd", [str(2**100), str(2**60)]), ("gcd", [str(2**60), str(2**100)]),
+    ("gcd", [str(2**100), str(3 * 2**60)]), ("gcd", [str(2**64), "1"]),
+    ("gcd", [str(2**4096), str(2**4096)]), ("gcd", [str(2**1000), "6"]),
+    ("gcd", ["1024", "768"]), ("gcd", [str(2**32), str(2**32 - 1)]),
+    ("gcd", [str(2**32 - 1), str(2**32)]),
+    # 2^a - 1 and 2^b - 1 have gcd 2^gcd(a,b) - 1, so these have answers
+    # that are themselves many limbs long rather than small.
+    ("gcd", [str(2**16000 - 1), str(2**8000 - 1)]),
+    ("gcd", [str(2**16000 - 1), str(2**15999 - 1)]),
+    ("gcd", [str(2**4096 - 1), str(2**2048 - 1)]),
+    # Consecutive Fibonacci numbers are Euclid's worst case and a long run
+    # of single-bit steps for binary GCD too.
+    ("gcd", ["514229", "832040"]), ("gcd", ["832040", "514229"]),
+    ("gcd", [str(10**500), str(2**1000)]),
+    ("gcd", [str(10**500 + 1), str(10**500)]),
+    ("gcd", [str(-(10**500)), str(2**1000)]),
     # 2048 and 4096 bits, which is what this operation is for. The
     # all-bits-set exponent is the worst case for the loop and the reason
     # the running time leaks the exponent; see the README.
@@ -649,7 +686,7 @@ MAG_PAIRS = [
 ]
 
 BIN_OPS = ["add", "sub", "mul", "mulsb", "mulk", "divf", "mod", "divmod",
-           "and", "or", "xor", "cmp"]
+           "and", "or", "xor", "cmp", "gcd"]
 
 
 

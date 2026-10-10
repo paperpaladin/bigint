@@ -838,6 +838,70 @@ int bi_powm(bi *r, const bi *a, const bi *e, const bi *m)
     return bi_powm_counted(r, a, e, m, NULL, NULL);
 }
 
+/* Trailing zero bits of |x|, 0 for zero. Binary GCD is the only caller. */
+static uint64_t utz(const bi *x)
+{
+    int i;
+    for (i = 0; i < x->n; i++)
+        if (x->d[i]) {
+            bi_limb w = x->d[i];
+            int k = 0;
+            while (!(w & 1)) { w >>= 1; k++; }
+            return (uint64_t)i * 32 + k;
+        }
+    return 0;
+}
+
+/* Binary GCD, Stein's algorithm, against Python's math.gcd.
+ *
+ * Euclid is the obvious alternative and would reuse bi_divmod, but a
+ * division per step is the expensive way to do this: shifts and
+ * subtractions are all binary GCD needs, and most of its shifts are
+ * limb-aligned. math.gcd is exact either way, so the choice of algorithm
+ * costs nothing in testability.
+ *
+ * Signs go first, as math.gcd drops them: gcd(-4, 6) is 2, gcd(0, 0) is 0.
+ *
+ * shortcut: one subtraction per iteration, so the iteration count is
+ * O(bits(a) + bits(b)) and every iteration allocates. The upgrade path is
+ * Lehmer's method, which does most of the work in single limbs.
+ */
+void bi_gcd(bi *r, const bi *a, const bi *b)
+{
+    bi u, v, t;
+    uint64_t ta, tb, shift;
+
+    if (a->sign == 0) { bi_abs(r, b); return; }
+    if (b->sign == 0) { bi_abs(r, a); return; }
+
+    bi_init(&u);
+    bi_init(&v);
+    bi_init(&t);
+    bi_abs(&u, a);
+    bi_abs(&v, b);
+
+    /* Pull out the twos they share, then keep both odd. */
+    ta = utz(&u);
+    tb = utz(&v);
+    shift = ta < tb ? ta : tb;
+    (void)ushr(&t, &u, ta); bi_swap(&u, &t);
+    (void)ushr(&t, &v, tb); bi_swap(&v, &t);
+
+    while (v.n != 0) {
+        if (ucmp(&u, &v) > 0) bi_swap(&u, &v);      /* u <= v */
+        usub(&t, &v, &u); bi_swap(&v, &t);          /* odd - odd, so even */
+        if (v.n) { (void)ushr(&t, &v, utz(&v)); bi_swap(&v, &t); }
+    }
+
+    ushl(&t, &u, shift);
+    t.sign = t.n ? 1 : 0;
+    norm(&t);
+    bi_swap(r, &t);
+    bi_free(&u);
+    bi_free(&v);
+    bi_free(&t);
+}
+
 static int hexval(char c)
 {
     if (c >= '0' && c <= '9') return c - '0';
@@ -926,6 +990,7 @@ static const struct { const char *name; int ary; int hexin; } OPS[] = {
     { "hex", 1, 0 }, { "hexrt", 1, 0 }, { "unhex", 1, 1 },
     { "pow", 2, 0 }, { "mulsb", 2, 0 }, { "mulk", 2, 0 },
     { "powm", 3, 0 }, { "powmc", 3, 0 },
+    { "gcd", 2, 0 },
 };
 
 static void emit(const bi *x)
@@ -1224,6 +1289,8 @@ int main(void)
                 free(s);
             }
         }
+
+        else if (!strcmp(op, "gcd")) { bi_gcd(&r, &a, &b); emit(&r); }
 
         else if (!strcmp(op, "hex")) {
             char *s = bi_to_hex(&a);

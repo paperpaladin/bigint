@@ -145,6 +145,10 @@ int bi_powm(bi *r, const bi *a, const bi *e, const bi *m);
 int bi_powm_counted(bi *r, const bi *a, const bi *e, const bi *m,
                     unsigned long *nsq, unsigned long *nmul);
 
+/* Greatest common divisor, as Python's math.gcd: non-negative whatever the
+ * signs of the operands, and 0 for gcd(0, 0). Binary GCD; see bigint.c. */
+void bi_gcd(bi *r, const bi *a, const bi *b);
+
 int bi_bits(const bi *x);   /* bit length of |x|; 0 for zero, as Python */
 
 
