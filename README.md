@@ -37,7 +37,7 @@ library follows Python.**
 ```
 
 The rule is `a == q*b + r` with `0 <= |r| < |b|` and `r` carrying the sign of
-the **divisor**. The remainder is never negative when the divisor is positive.
+the divisor. The remainder is never negative when the divisor is positive.
 
 Python is the oracle, so Python's rule wins; overruling your oracle on the one
 operation where implementations disagree would make the whole exercise
@@ -86,16 +86,16 @@ arithmetic is genuinely reusable and the line-protocol driver is not.
 Sign-magnitude: a little-endian array of 32-bit limbs plus a sign of -1, 0 or
 +1, always normalised.
 
-**32-bit limbs, not 64.** Every intermediate product then fits a `uint64_t`
-exactly -- `ai*bj + r + carry` peaks at `(2^32-1)^2 + 2*(2^32-1) = 2^64 - 1`,
-with nothing to spare -- which is what makes Knuth algorithm D writable in
+32-bit limbs, not 64. Every intermediate product then fits a `uint64_t`
+exactly: `ai*bj + r + carry` peaks at `(2^32-1)^2 + 2*(2^32-1) = 2^64 - 1`,
+with nothing to spare, which is what makes Knuth algorithm D writable in
 portable C11 with no `__int128` and no inline assembly. The cost is roughly
 half the throughput of a 64-bit-limb implementation. Marked `shortcut:` in the
 source with the upgrade path.
 
 Multiplication is schoolbook below 96 limbs and Karatsuba above. Division is
 Knuth algorithm D in the `divmnu` form from Hacker's Delight. Hex conversion
-is limb-aligned and linear; decimal conversion is quadratic in both
+is limb-aligned and linear. Decimal conversion is quadratic in both
 directions.
 
 ### The invariant the oracle cannot see
@@ -105,7 +105,7 @@ value is zero. Python cannot check this. `bi_to_dec` divides the value down by
 10^9 and simply never looks at leading zero limbs, so an **untrimmed result
 prints identically to a trimmed one** and a million-case differential run
 reports zero disagreements. The only observer is `bi_cmp`, which compares limb
-counts first -- so the bug sits there silently until some unrelated comparison
+counts first, so the bug sits there silently until some unrelated comparison
 starts returning the wrong answer.
 
 So the driver asserts it directly, on every result of every case, and prints
@@ -131,7 +131,7 @@ sampling covers badly:
 | carry and borrow chains: 999...9 against 1, 10^k against 1, 2^b - 1 | a chain value against another big number does not propagate anything; the carry dies in the first few limbs |
 | every pair of limb lengths 1x1 to 16x16, plus the cutoff straddles, through all three multiply paths | Karatsuba splits at half the shorter operand, so behaviour depends on both lengths and their parity |
 | hex round trip over 2^k - 1 for every k in 0..299 | a nibble or limb indexing error that shows up at one length in eight has nowhere to hide in 300 consecutive lengths |
-| division by zero in every operand sign, and all twelve sign/op combinations of 7 and 2 | must error rather than crash, and the floor correction must be conditional on a nonzero remainder |
+| division by zero in every operand sign, and all twelve sign/op combinations of 7 and 2 | must error instead of crashing, and the floor correction must be conditional on a nonzero remainder |
 
 Plus a fixed corpus of degenerate inputs: empty and malformed literals, `-0`,
 `0 ** 0`, `0 << 10^30`, `1 ** 10^30`, exact quotients with mixed signs.
@@ -154,18 +154,18 @@ with a full top limb and once with a top limb of exactly 1.
 
 ## Writing this found two real bugs
 
-**`bi_to_dec` wrote 20 bytes into a 14-byte buffer.** It sized the buffer at
+`bi_to_dec` wrote 20 bytes into a 14-byte buffer. It sized the buffer at
 10 bytes per limb, which is correct for the digits, but the 10^9 chunk loop
 emits 9 digits whether or not they are significant, so a 1-limb value
 overflowed. glibc caught it as `corrupted size vs. prev_size` on the very
 first corpus case of the very first run.
 
-**`umul_school` never normalised its own result**, so a 1-limb-by-1-limb
+`umul_school` never normalised its own result, so a 1-limb-by-1-limb
 product came back with `n == 2` and a leading zero limb. Every public caller
 normalises afterwards, so this was invisible from outside the library and the
-oracle had nothing to complain about -- and it was found only because it
+oracle had nothing to complain about, and it was found only because it
 silently disarmed the Karatsuba fault injection above, by making `z2` never a
-single limb. The fix is one `norm()` call; the interesting part is that six
+single limb. The fix is one `norm()` call. The interesting part is that six
 million agreeing cases had not noticed.
 
 ## Karatsuba, measured
@@ -193,80 +193,80 @@ Full recursion at BI_KARATSUBA_CUTOFF = 96, against schoolbook
 ```
 
 A single Karatsuba level breaks even near 32 limbs, but the best cutoff for
-the recursive version is 96 -- three times that -- because each level
+the recursive version is 96, three times that, because each level
 allocates six temporaries. Cutoffs 8 through 128 were scanned at 256, 1024 and
-4096 limbs; the optimum sat in the 80 to 112 band and 96 is the middle of it.
+4096 limbs. The optimum sat in the 80 to 112 band and 96 is the middle of it.
 
 ## What does NOT work
 
 Plainly, because a README that only lists successes is not finished.
 
-**Not portable.** gcc only, as stated. Knuth D needs a signed borrow that goes
+Not portable. gcc only, as stated. Knuth D needs a signed borrow that goes
 negative, so the inner loop shifts `int64_t` values right, which the C
 standard leaves implementation-defined. gcc and clang define it as arithmetic.
 A compiler that does not would produce wrong quotients, silently.
 
-**Out of memory aborts the process** with exit code 70. There is no allocation
+Out of memory aborts the process with exit code 70. There is no allocation
 failure path through the API, so a caller cannot recover.
 
-**Parsing is stricter than Python's.** `bi_set_dec` and `bi_set_hex` take an
+Parsing is stricter than Python's. `bi_set_dec` and `bi_set_hex` take an
 optional sign, digits, and (for hex) an optional `0x`/`0X` prefix and leading
 zeros. They reject what Python accepts: surrounding whitespace (`int(" 12 ")`),
 digit group underscores (`int("1_000")`), and any other base. The fuzzer does
-not generate those forms, so this is a documented restriction rather than a
+not generate those forms, so this is a documented restriction, not a
 tested one.
 
-**Two operations refuse inputs Python accepts.** A negative exponent is
+Two operations refuse inputs Python accepts. A negative exponent is
 `E negpow`, where Python returns a float. A shift or power whose result would
 exceed `BI_MAX_BITS` (16 Mbit) is `E toobig`, where Python would try. Both
 are deviations from the oracle; `t/fuzz.py` models both rules explicitly so
 they stay tested, but they are deviations.
 
-**Base conversion is quadratic.** Decimal parse is repeated multiply-by-10,
+Base conversion is quadratic. Decimal parse is repeated multiply-by-10,
 decimal format is repeated divide-by-10^9. At 500 limbs that is already the
 dominant cost of the whole test run, and it is why the Karatsuba benchmark
 stops at 4096 limbs: printing the answer costs more than computing it. Hex is
 linear in both directions. Marked `shortcut:` with divide-and-conquer
 splitting as the upgrade path.
 
-**Division is quadratic too.** Knuth D is `O(n*m)`; there is no
+Division is quadratic too. Knuth D is `O(n*m)`. There is no
 Burnikel-Ziegler, so dividing a 4096-limb number by a 2048-limb one is slow in
 a way multiplication at the same size no longer is.
 
-**Every binary operation allocates.** The result is built in a fresh temporary
+Every binary operation allocates. The result is built in a fresh temporary
 and swapped into place, which makes `bi_add(&x, &x, &x)` correct by
 construction but costs a malloc/free pair per call. Marked `shortcut:`.
 
-**The largest accepted shift is not tested.** `1 << (BI_MAX_BITS - 1)` is
+The largest accepted shift is not tested. `1 << (BI_MAX_BITS - 1)` is
 legal and would take seconds to print under quadratic base conversion, so the
 success side of the ceiling is checked at 64 Kbit and only the error side is
 checked at the exact boundary.
 
-**The random classes stop at 500 limbs**, and the length matrix at 192.
+The random classes stop at 500 limbs, and the length matrix at 192.
 Karatsuba's recursion only gets deep past about 1000 limbs, which no fuzz case
 reaches, for the base-conversion reason above. The `make bench` numbers at
 4096 limbs are therefore measured on values the fuzzer has never checked.
 
-**Every case depends on the decimal parser being correct.** Operands go in as
+Every case depends on the decimal parser being correct. Operands go in as
 decimal strings and results come out as decimal strings, so a parser bug that
 happens to be symmetric with a formatter bug would cancel out and the run
 would stay green. Queued as milestone item 18.
 
-**`grow()` hands back uninitialised limbs**, and the only thing stopping them
+`grow()` hands back uninitialised limbs, and the only thing stopping them
 from being read is the `n` field. ASan does not catch uninitialised reads.
 A 400-case run under `valgrind -q --track-origins=yes` is clean, but that was
 done by hand once and is not wired into `make test`, so nothing re-checks it;
 queued as milestone item 19.
 
 
-**Not implemented at all:** modular exponentiation (three-argument `pow`),
+Not implemented at all: modular exponentiation (three-argument `pow`),
 GCD, integer square root, primality testing, conversion to or from floating
 point, bases other than 10 and 16, bitwise NOT as a named operation (it is
 `-x - 1`), and bit counting.
 
-**The line protocol cannot carry every operand.** Operands are separated by
+The line protocol cannot carry every operand. Operands are separated by
 whitespace, so an empty operand or one containing a space is not
-representable; the driver reports `E parse` for those, which happens to be
+representable. The driver reports `E parse` for those, which happens to be
 what Python says about `int("")` too.
 
 ## License
