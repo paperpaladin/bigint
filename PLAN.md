@@ -48,7 +48,7 @@ fault injection (commit 16).
 
 2. Schoolbook multiply against Karatsuba multiply. Two independent
    implementations of one function, checked against each other on identical
-   operands as well as against Python. Weaker than Python: a shared
+   operands as well as against Python. Weaker than Python. A shared
    misunderstanding would agree, but far cheaper, so every `mul` case runs
    through both.
 3. ASan and UBSan, via `make test-asan`. A bignum indexes limb arrays
