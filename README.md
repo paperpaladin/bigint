@@ -37,7 +37,7 @@ library follows Python.**
 ```
 
 The rule is `a == q*b + r` with `0 <= |r| < |b|` and `r` carrying the sign of
-the divisor. The remainder is never negative when the divisor is positive.
+the divisor. A remainder is never negative when the divisor is positive.
 
 Python is the oracle, so Python's rule wins; overruling your oracle on the one
 operation where implementations disagree would make the whole exercise
@@ -165,8 +165,7 @@ product came back with `n == 2` and a leading zero limb. Every public caller
 normalises afterwards, so this was invisible from outside the library and the
 oracle had nothing to complain about, and it was found only because it
 silently disarmed the Karatsuba fault injection above, by making `z2` never a
-single limb. The fix is one `norm()` call. The interesting part is that six
-million agreeing cases had not noticed.
+single limb. The fix is one `norm()` call. What is interesting is that six million agreeing cases had not noticed.
 
 ## Karatsuba, measured
 
