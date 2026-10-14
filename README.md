@@ -88,7 +88,7 @@ Sign-magnitude: a little-endian array of 32-bit limbs plus a sign of -1, 0 or
 
 32-bit limbs, not 64. Every intermediate product then fits a `uint64_t`
 exactly: `ai*bj + r + carry` peaks at `(2^32-1)^2 + 2*(2^32-1) = 2^64 - 1`,
-with nothing to spare, which is what makes Knuth algorithm D writable in
+with nothing to spare, and that is what makes Knuth algorithm D writable in
 portable C11 with no `__int128` and no inline assembly. The cost is roughly
 half the throughput of a 64-bit-limb implementation. Marked `shortcut:` in the
 source with the upgrade path.
