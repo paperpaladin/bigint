@@ -921,6 +921,44 @@ static void emit2(const bi *x, const bi *y)
 }
 
 
+/* A "hex:" marker on an operand routes it through the hex parser, whatever
+ * the op's own default is. The fuzzer uses it to put identical arithmetic
+ * through both input paths: every case otherwise depends on bi_set_dec
+ * being right, and a parse bug that is symmetric with a format bug cancels
+ * out and leaves the run green.
+ *
+ * The marker rather than a bare 0x prefix, because "dec 0x10" is a corpus
+ * case asserting that the DECIMAL parser rejects a hex literal, and
+ * treating 0x as hex everywhere would have quietly turned that assertion
+ * into its opposite. */
+static int set_operand(bi *x, const char *s, int hexin)
+{
+    int neg = (*s == '-');
+    const char *p = s + (neg || *s == '+');
+
+    if (!strncmp(p, "hex:", 4)) {
+        char buf[8];
+        int n = 0;
+
+        if (neg) buf[n++] = '-';
+        buf[n] = 0;
+        /* bi_set_hex takes its own sign, so hand it the digits with the
+         * sign reattached and nothing else. */
+        {
+            size_t len = strlen(p + 4);
+            char *tmp = malloc(len + 2);
+            int rc;
+
+            if (!tmp) return -1;
+            rc = snprintf(tmp, len + 2, "%s%s", buf, p + 4);
+            rc = (rc < 0) ? -1 : bi_set_hex(x, tmp);
+            free(tmp);
+            return rc;
+        }
+    }
+    return hexin ? bi_set_hex(x, s) : bi_set_dec(x, s);
+}
+
 int main(void)
 {
     char *line = NULL;
@@ -958,11 +996,14 @@ int main(void)
             }
         if (ary < 0) { printf("E unknown op %s\n", op); continue; }
         if (n != ary + 1) { puts("E parse"); continue; }
-        if ((hexin ? bi_set_hex(&a, arg[1]) : bi_set_dec(&a, arg[1])) != 0) {
+        if (set_operand(&a, arg[1], hexin) != 0) {
             puts("E parse");
             continue;
         }
-        if (ary == 2 && bi_set_dec(&b, arg[2]) != 0) { puts("E parse"); continue; }
+        if (ary == 2 && set_operand(&b, arg[2], 0) != 0) {
+            puts("E parse");
+            continue;
+        }
 
         if (!strcmp(op, "dec")) emit(&a);
         else if (!strcmp(op, "neg")) { bi_neg(&r, &a); emit(&r); }

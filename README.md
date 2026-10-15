@@ -84,6 +84,24 @@ a monotone predicate must reduce to 1000 and not merely to something
 under it, sign must not be crossed, a predicate with a single failing
 value must still be found, and the divisor guard must hold.
 
+A quarter of generated draws run twice, once with decimal operands and
+once with the same values written in hex, marked `hex:`, against the same
+oracle answer. Every case otherwise rests on `bi_set_dec` being right, and
+a parse bug that is symmetric with a format bug cancels out and leaves the
+run green. 14.8% of cases take the hex path.
+
+What that buys is visible with a planted bug. A decimal parser that drops
+the last digit past 40 digits makes 1107 of 2515 decimal cases disagree
+while all 485 hex twins pass, so the failure says "parser" instead of
+looking like a thousand broken arithmetic results. The carry mutant in
+`uadd` fails on both paths, 40 of 2515 and 9 of 485, which is the check
+that says the twins are sensitive rather than agreeing with themselves.
+
+The marker is `hex:` and not a bare `0x` prefix. `dec 0x10` is a corpus
+case asserting that the decimal parser rejects a hex literal, and the
+first version of this read `0x` as hex everywhere, which turned that
+assertion into its opposite and stayed green.
+
 `bigint` itself reads one operation per stdin line and writes one result line,
 which is how the fuzzer spends a single process on millions of cases instead
 of a million processes:

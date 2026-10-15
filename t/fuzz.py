@@ -127,12 +127,60 @@ def rand_shift(rnd):
     return rnd.choice([MAX_BITS, MAX_BITS + 1, 2**70, 10**30])
 
 
+def oper(s):
+    """One operand, decimal or hex.
+
+    A "hex:" marker means hex, for any operation, matching the driver. The
+    marker rather than a bare 0x prefix: "dec 0x10" is a corpus case
+    asserting the DECIMAL parser rejects a hex literal, and reading 0x as
+    hex everywhere would turn that assertion into its opposite.
+    """
+    neg = s[:1] == "-"
+    t = s[1:] if s[:1] in "+-" else s
+    if t[:4] == "hex:":
+        return int(("-" if neg else "") + t[4:], 16)
+    return int(s)
+
+
+def as_hex(s):
+    """The same operand written for the hex path, or None if it will not go.
+
+    Leading zeros and a stray sign are the decimal parser's business, so
+    anything that is not a plain integer is left to it alone.
+    """
+    try:
+        v = int(s)
+    except ValueError:
+        return None
+    return ("-" if v < 0 else "") + "hex:" + format(abs(v), "x")
+
+
+def hex_twin(cases):
+    """For each case, the same case with every operand in hex.
+
+    The result must be identical, which is the whole point: the arithmetic
+    is unchanged and only the input path differs, so a disagreement
+    between the two is a parser bug and nothing else. Ops whose operand is
+    already a hex literal, or whose purpose is to test one parser, are
+    left alone.
+    """
+    out = []
+    for op, args in cases:
+        if op in ("unhex", "dec", "hex", "hexrt"):
+            continue
+        twins = [as_hex(a) for a in args]
+        if any(t is None for t in twins):
+            continue
+        out.append((op, twins))
+    return out
+
+
 def ev(op, args):
     """The oracle. Returns the exact line bigint is expected to print."""
     try:
         if op == "unhex":
             return str(int(args[0], 16))
-        vals = [int(s) for s in args]
+        vals = [oper(s) for s in args]
     except ValueError:
         return "E parse"
 
@@ -237,9 +285,11 @@ def gen(rnd):
     op = rnd.choice(OPS)
     if op == "pow":
         x = rand_val(rnd)
-        return [(op, [str(x), str(rand_pow_exp(rnd, x))])]
+        cases = [(op, [str(x), str(rand_pow_exp(rnd, x))])]
+        return cases + hex_twin(cases) if rnd.random() < 0.25 else cases
     if op in ("shl", "shr"):
-        return [(op, [str(rand_val(rnd)), str(rand_shift(rnd))])]
+        cases = [(op, [str(rand_val(rnd)), str(rand_shift(rnd))])]
+        return cases + hex_twin(cases) if rnd.random() < 0.25 else cases
     if op == "unhex":
         return [(op, [rand_hexlit(rnd)])]
     if op == "mul":
@@ -247,10 +297,19 @@ def gen(rnd):
         # oracle for each, which also makes the schoolbook and Karatsuba
         # implementations oracles for each other.
         args = [str(v) for v in rand_pair(rnd)]
-        return [("mul", args), ("mulsb", args), ("mulk", args)]
+        cases = [("mul", args), ("mulsb", args), ("mulk", args)]
+        if rnd.random() < 0.25:
+            cases = cases + hex_twin(cases)
+        return cases
     if ARITY[op] == 2:
-        return [(op, [str(v) for v in rand_pair(rnd)])]
-    return [(op, [str(rand_val(rnd))])]
+        cases = [(op, [str(v) for v in rand_pair(rnd)])]
+    else:
+        cases = [(op, [str(rand_val(rnd))])]
+    # A quarter of draws go through the hex parser as well as the decimal
+    # one, on the same operands and against the same oracle value.
+    if rnd.random() < 0.25:
+        cases = cases + hex_twin(cases)
+    return cases
 
 
 
