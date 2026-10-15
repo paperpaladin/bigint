@@ -5,7 +5,7 @@ native `int` on millions of cases.
 
 ```
 $ make test
-107571 agree, 0 disagree
+107573 agree, 0 disagree
 
 $ make test-asan
 22571 agree, 0 disagree
