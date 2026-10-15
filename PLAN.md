@@ -127,9 +127,46 @@ function's output is its arguments.
 
 ### Milestone 1: make the oracle harder to satisfy
 
-- [ ] 17 shrink on disagreement: minimise both operands before printing them
+- [x] 17 shrink on disagreement: minimise both operands before printing them
       why: the first real disagreement at a 500-limb magnitude will otherwise
            print 4800 digits and be unreadable
+      files: t/fuzz.py t/run.sh
+      proves: against a planted mutant that drops the final carry limb of
+              uadd, a 4823-character case reduces to `add 1 4294967295`,
+              12 characters, which is the exact boundary of that bug. Four
+              self-tests pin the reducer itself with synthetic predicates
+              whose answers are known: the monotone one must land on 1000
+              and not merely below it, sign must not be crossed, a
+              non-monotone predicate with one failing value must still be
+              found, and a divisor must not be reduced to zero.
+      found: three bugs in the reducer, each one a version that looked like
+             it worked.
+             Searching the value by bisection is 16000 probes for a
+             16000-bit operand and each probe is a process, so it hung
+             rather than finished. It searches the bit length now, 14
+             probes for the same operand.
+             Bit-length search alone stops on a power of two: for a
+             predicate whose true boundary is 1000 it returned 1872. A
+             bounded search between the smallest failing and largest
+             passing value finds the boundary, and the self-test asserts
+             the exact number for that reason.
+             Magnitude reduction cannot minimise a carry bug at all.
+             `add 1 X` fails only while X has its whole top limb set, and
+             halving X clears that bit, so every candidate passes and the
+             search keeps whatever it was holding: 1207 digits for a case
+             whose minimal form is 12 characters. Raising the probe budget
+             from 120 to 1200 changed nothing, which is what said the
+             strategy was wrong and not the budget. It tries all-ones and
+             power-of-two values at each limb boundary now, and those are
+             tried before the expensive bisection, because the first
+             ordering spent the entire budget bisecting a 2^4000 range and
+             never reached them.
+      note: a reduced case is guaranteed to still fail, by construction,
+            and is not guaranteed to fail for the original reason. Both
+            lines are printed and the original is marked as the one to
+            trust. The divisor guard exists for the same reason: a
+            reduction that walks into division by zero turns a real
+            arithmetic bug into the trivial one.
 - [ ] 18 feed the fuzzer's generated operands through the C parser as hex as
       well as decimal, so parse and format are not trusted while arithmetic
       is being measured

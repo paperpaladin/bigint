@@ -63,6 +63,27 @@ arguments, so `t/run.sh 2000000 17` is a two-million-case run on seed 17. A
 disagreement prints the operation, the operands, Python's answer, bigint's
 answer, and the failing seed.
 
+It then prints the case again, reduced. Operands here run to 16000 bits,
+which is 4817 decimal digits, and a failure printed at that width is not
+something anybody reads. The reducer shrinks each operand while the case
+still fails: against a planted mutant that drops the final carry limb of
+`uadd`, a 4823-character case comes out as `add 1 4294967295`, which is
+the exact boundary of that bug.
+
+Two things it does not claim. A reduced case still fails, by
+construction, and may fail for a different reason than the one you
+started with, so the original line is printed too and is the one to
+trust. And it will not reduce a divisor to zero, because division by zero
+disagrees for its own reasons and a reducer that wanders into it reports
+the wrong bug.
+
+The reducer has four self-tests of its own, run by `make test` before the
+fuzzer. They use synthetic predicates whose answers are known exactly,
+which is the only way to check a reducer without a broken bigint to hand:
+a monotone predicate must reduce to 1000 and not merely to something
+under it, sign must not be crossed, a predicate with a single failing
+value must still be found, and the divisor guard must hold.
+
 `bigint` itself reads one operation per stdin line and writes one result line,
 which is how the fuzzer spends a single process on millions of cases instead
 of a million processes:
