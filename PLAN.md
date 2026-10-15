@@ -192,11 +192,36 @@ function's output is its arguments.
              everywhere turned that assertion into its opposite while
              leaving it green. The marker is "hex:" for that reason, and
              `dec 0x10` still returns E parse.
-- [ ] 19 wire valgrind into the Makefile alongside ASan, on a short seed
+- [x] 19 wire valgrind into the Makefile alongside ASan, on a short seed
       why: ASan misses uninitialised reads, and `grow()` hands back
            uninitialised limbs with only `n` stopping them being read. A
            400-case run with `--track-origins=yes` is clean, but it was run
            by hand once and nothing re-checks it.
+      files: Makefile t/fuzz.py t/run.sh
+      proves: `make test-valgrind` runs 300 cases on seed 11 under
+              `--track-origins=yes --error-exitcode=99`, 7872 comparisons,
+              clean.
+              Against a planted read of `d[n]`, one limb past the end of
+              the value and inside the allocation: ASan reports nothing at
+              all, 7872 agree and 0 disagree, and valgrind exits 99 naming
+              `ucmp` as the reader and `grow` as where the memory came
+              from. That is the gap this target exists to cover, and it is
+              now a measured gap rather than an argued one.
+      found: three things in the plumbing.
+             `BIGINT` was exec'd as a single filename, so a wrapper
+             command could not be passed at all. It is `shlex.split` now.
+             `t/run.sh` tested `-x "$BIGINT"`, which fails for a command
+             with arguments. Rewriting it as `set -- $BIGINT` overwrote
+             the script's own positional parameters and turned the case
+             count into "./bigint". It uses `${BIGINT%% *}` instead.
+             A failing driver had its stderr truncated to the last 400
+             characters and squeezed into the want/got template, which
+             printed `got: llocation`. A non-zero exit now prints the
+             diagnostic on its own lines, and that is the difference
+             between a valgrind report and a riddle.
+      note: a loud skip when valgrind is absent, never a quiet pass. It is
+            one checker among several here, so a missing one should not
+            stop the suite, and it must not look like it ran either.
 
 - [ ] 20 a `bi_check()` exported invariant checker, called from the driver on
       every operand as well as every result

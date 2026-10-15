@@ -54,9 +54,20 @@ Python's infinite two's-complement model (`-1 & 5` is `5`, `-1 | 0` is `-1`).
 make            # ./bigint
 make test       # the differential fuzzer; prints "N agree, M disagree"
 make test-asan  # the same under ASan + UBSan, fewer cases
+make test-valgrind  # the same under valgrind, fewer cases still
 make bench      # where Karatsuba starts paying, measured
 make clean
 ```
+
+ASan and valgrind are not interchangeable here. A bignum library indexes
+limb arrays constantly, which is ASan's subject, but `grow()` hands back
+uninitialised limbs with only `n` stopping them being read, and to ASan
+that memory is allocated and reading it is legal. Planting exactly that
+read, one limb past the end of the value, ASan reports nothing: 7872
+comparisons, 0 disagree. valgrind exits 99 and names `ucmp` as the reader
+and `grow` as where the memory came from. `make test-valgrind` runs 300
+cases on seed 11 with `--track-origins=yes`, and prints a loud skip
+instead of passing quietly if valgrind is not installed.
 
 `t/run.sh [CASES] [SEED]` is the test entry point and takes both as
 arguments, so `t/run.sh 2000000 17` is a two-million-case run on seed 17. A
