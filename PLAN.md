@@ -223,10 +223,54 @@ function's output is its arguments.
             one checker among several here, so a missing one should not
             stop the suite, and it must not look like it ran either.
 
-- [ ] 20 a `bi_check()` exported invariant checker, called from the driver on
+- [x] 20 a `bi_check()` exported invariant checker, called from the driver on
       every operand as well as every result
       why: the current check only sees results, so an unnormalised value that
            is produced and consumed internally is still invisible
+      files: bigint.c bigint.h t/fuzz.py
+      done: the driver's private `normal()` moved into the library as
+            `bi_check()`, declared in `bigint.h`, predicate unchanged. The
+            driver calls it on both operands straight after parsing and
+            prints `E unnormalised operand`, which is a different string
+            from the `E unnormalised` a bad result gets, because which side
+            is wrong is the whole question.
+      proves: the gap was real and is now closed. Only `dec` and `unhex`
+              ever print an operand back, so every other parse was
+              unchecked. Delete `norm()` from `bi_set_hex` and
+              `add hex:0 hex:5`, `mul hex:0 hex:5`, `sub hex:0 hex:7`,
+              `and hex:0 hex:5`, `cmp hex:0 hex:0` and `divf hex:0 hex:3`
+              all still agree with Python, 6 out of 6, because every
+              operation normalises its own answer: the zero that went in
+              carried a limb and a sign it should not have, and came back
+              out correct. With the operand check they are 0 out of 6.
+              Four mutations, all RED: `norm()` out of `bi_set_hex`,
+              86 of 10571; the `hex:` branch of `set_operand` setting the
+              sign itself instead of delegating to `bi_set_hex`, 49;
+              `norm()` out of both `usub` and `bi_add`, 30; the trim loop
+              out of `norm()`, all 10575. The last two are the result-side
+              check, which this item moved but did not change, so they are
+              the regression test on the move.
+      found: two bugs in the harness, both exposed by running the
+             mutations rather than by reading the code.
+             `shrink()` did `int(a)` on every operand, so the moment a
+             hex-twin case was the one that disagreed the fuzzer died with
+             a `ValueError` and printed no report at all. Item 18 added
+             the `hex:` marker and item 17's reducer predates it. It uses
+             `oper()` now and re-renders candidates in the spelling they
+             arrived in, so the reduced case goes through the same parser
+             as the one that failed: the 265-character case above reduces
+             to `cmp hex:0 hex:0`, 15 characters.
+             A dead driver was being crowded out of its own report. The
+             `<driver exit N>` entry is appended last and only the first
+             20 failures print, so when the second mutation took SIGFPE
+             181 lines into a chunk, all 20 slots went to the knock-on
+             comparisons and the signal was never mentioned. Driver-exit
+             entries sort first now.
+      note: the `n > cap` clause of `bi_check` is not exercised by any
+            planted defect. A `grow(r, hi->n)` off-by-one in `uadd` does
+            reach `n > cap`, but it writes past the allocation first and
+            dies in `free()` before anything reads the flag. It is kept as
+            a cheap assertion, not claimed as a tested one.
 
 ### Milestone 2: the operations that need a second implementation
 

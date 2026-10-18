@@ -88,6 +88,13 @@ trust. And it will not reduce a divisor to zero, because division by zero
 disagrees for its own reasons and a reducer that wanders into it reports
 the wrong bug.
 
+It reduces a hex-twin case in hex. It used to call `int()` on every
+operand, so the first disagreement that landed on a `hex:` case killed the
+fuzzer with a `ValueError` and printed no report at all: item 18 added the
+marker and the reducer predates it. Candidates go back out in the spelling
+they came in with, so the reduced case runs through the same parser as the
+one that failed.
+
 The reducer has four self-tests of its own, run by `make test` before the
 fuzzer. They use synthetic predicates whose answers are known exactly,
 which is the only way to check a reducer without a broken bigint to hand:
@@ -126,7 +133,11 @@ $ printf 'divmod -7 2\npow 2 64\nhex -255\nand -1 5\n' | ./bigint
 ```
 
 Errors are reported as `E <reason>` on stdout and do not stop the stream:
-`E parse`, `E divzero`, `E negshift`, `E negpow`, `E toobig`.
+`E parse`, `E divzero`, `E negshift`, `E negpow`, `E toobig`. Two more are
+not errors the library can return but assertions the driver makes with
+`bi_check()`: `E unnormalised operand` and `E unnormalised`, for an operand
+or a result that violates the representation invariant. They cannot be
+triggered by any input; seeing one means a bug in the library.
 
 `bigint.h` is the library API. It is worth having separately here because the
 arithmetic is genuinely reusable and the line-protocol driver is not.
@@ -158,10 +169,37 @@ reports zero disagreements. The only observer is `bi_cmp`, which compares limb
 counts first, so the bug sits there silently until some unrelated comparison
 starts returning the wrong answer.
 
-So the driver asserts it directly, on every result of every case, and prints
-`E unnormalised` if it is violated. Deleting the trim loop out of `norm()`
-makes `10^500 - (10^500 - 1)` report `E unnormalised` instead of `1`; a plain
+So the invariant is a predicate in the library, `bi_check()`, exported from
+`bigint.h` precisely because nothing the library prints can reveal a
+violation. The driver asserts it on every result and prints `E unnormalised`
+if it is violated. Deleting the trim loop out of `norm()` makes
+`10^500 - (10^500 - 1)` report `E unnormalised` instead of `1`; a plain
 decimal comparison calls that same case a pass.
+
+It asserts it on both operands too, straight after parsing, with the
+separate message `E unnormalised operand`, because which side is wrong is
+the whole question. Only `dec` and `unhex` ever print an operand back, so
+until this every other parse went unchecked, and an unnormalised operand is
+consumed by arithmetic that normalises its own answer and so comes back out
+correct. Delete `norm()` from `bi_set_hex` and `add hex:0 hex:5`,
+`mul hex:0 hex:5`, `sub hex:0 hex:7`, `and hex:0 hex:5`, `cmp hex:0 hex:0`
+and `divf hex:0 hex:3` all still agree with Python, 6 out of 6, with a zero
+operand carrying a limb and a sign it should not have. With the operand
+check they are 0 out of 6, and a 3000-case run goes from clean to 86
+disagreements.
+
+What that buys is not only an earlier message. The same class of defect,
+planted instead in the `hex:` branch of `set_operand` so that it sets the
+sign itself rather than delegating, takes the whole driver down with SIGFPE
+181 lines into a chunk: an unnormalised zero walks past `b->sign == 0` in
+`bi_divmod` and divides by it. With the operand check it is 49 ordinary
+disagreements that reduce to `cmp hex:0 hex:0`.
+
+One clause of `bi_check` is not tested. `n > cap` has no planted defect that
+reaches it: a `grow(r, hi->n)` off-by-one in `uadd` does produce `n > cap`,
+but it writes past the allocation first and the process dies in `free()`
+before anything reads the flag. It stays as a cheap assertion and is not
+claimed as a checked one.
 
 ## The oracle
 
@@ -296,16 +334,16 @@ Karatsuba's recursion only gets deep past about 1000 limbs, which no fuzz case
 reaches, for the base-conversion reason above. The `make bench` numbers at
 4096 limbs are therefore measured on values the fuzzer has never checked.
 
-Every case depends on the decimal parser being correct. Operands go in as
-decimal strings and results come out as decimal strings, so a parser bug that
-happens to be symmetric with a formatter bug would cancel out and the run
-would stay green. Queued as milestone item 18.
+Most cases still depend on the decimal parser being correct. The hex twins
+cover 14.8% of them, and `dec`, `hex`, `hexrt` and `unhex` are excluded from
+twinning by construction, so a parser bug symmetric with a formatter bug
+would still cancel out on the other 85%. The twins narrow where such a bug
+can hide; they do not remove it.
 
-`grow()` hands back uninitialised limbs, and the only thing stopping them
-from being read is the `n` field. ASan does not catch uninitialised reads.
-A 400-case run under `valgrind -q --track-origins=yes` is clean, but that was
-done by hand once and is not wired into `make test`, so nothing re-checks it;
-queued as milestone item 19.
+valgrind runs 300 cases on one seed, not the whole suite, because every case
+costs roughly fifty times what it costs natively. An uninitialised read that
+only a rare operand shape reaches is therefore still possible: the gate
+proves the common paths are clean, not all of them.
 
 
 Not implemented at all: modular exponentiation (three-argument `pow`),
