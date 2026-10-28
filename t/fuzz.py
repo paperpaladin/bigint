@@ -265,6 +265,15 @@ def ev(op, args):
     if op == "gcd":
         # math.gcd drops both signs and answers 0 for gcd(0, 0).
         return str(math.gcd(vals[0], vals[1]))
+    if op == "isqrt":
+        # math.isqrt raises ValueError on a negative operand, and bigint
+        # refuses with BI_ENEGSQRT, so the two agree that there is no answer
+        # rather than agreeing on a value. Modelled here, in the same shape
+        # as negpow above, so the refusal stays compared rather than being
+        # excluded from the generator and quietly untested.
+        if vals[0] < 0:
+            return "E negsqrt"
+        return str(math.isqrt(vals[0]))
     if op == "abs":
         return str(abs(vals[0]))
     if op == "cmp":
@@ -277,7 +286,7 @@ ARITY = {"dec": 1, "neg": 1, "abs": 1, "cmp": 2, "add": 2, "sub": 2,
          "mul": 2, "mulsb": 2, "mulk": 2, "divf": 2, "mod": 2, "divmod": 2,
          "shl": 2, "shr": 2, "and": 2, "or": 2, "xor": 2,
          "hex": 1, "hexrt": 1, "unhex": 1, "pow": 2,
-         "powm": 3, "powmc": 3, "gcd": 2}
+         "powm": 3, "powmc": 3, "gcd": 2, "isqrt": 1}
 # mulsb and mulk are not picked directly: every "mul" case is emitted three
 # times, once per multiplication path, on identical operands.
 #
@@ -620,6 +629,38 @@ CORPUS = [
     ("powmc", ["3", "65537", "1000000007"]),
     ("powmc", ["3", "0", "1000000007"]), ("powmc", ["3", "1", "7"]),
     ("powmc", [str(M2048 - 3), "65537", str(M2048)]),
+    # --- isqrt --------------------------------------------------------
+    # The exact answer is floor(sqrt(a)), so every case here is checked
+    # against math.isqrt rather than against a tolerance. The interesting
+    # inputs are the ones either side of a perfect square, because an
+    # iteration that stops one step early or late is right on the square
+    # and wrong on its neighbours.
+    # The refusal, which is the only answer that is not a lie: there is no
+    # integer whose square is negative, and Python raises rather than
+    # returning one.
+    ("isqrt", ["-1"]), ("isqrt", ["-4"]), ("isqrt", [str(-(2**4096))]),
+    ("isqrt", ["0"]), ("isqrt", ["1"]), ("isqrt", ["2"]), ("isqrt", ["3"]),
+    ("isqrt", ["4"]), ("isqrt", ["8"]), ("isqrt", ["9"]), ("isqrt", ["10"]),
+    ("isqrt", ["15"]), ("isqrt", ["16"]), ("isqrt", ["17"]),
+    ("isqrt", ["24"]), ("isqrt", ["25"]), ("isqrt", ["26"]),
+    # A perfect square and its two neighbours at a limb boundary, where the
+    # first guess 2^ceil(bits/2) is itself the answer or one off it.
+    ("isqrt", [str(2**64)]), ("isqrt", [str(2**64 - 1)]),
+    ("isqrt", [str(2**64 + 1)]), ("isqrt", [str(2**32)]),
+    ("isqrt", [str((2**32) ** 2)]), ("isqrt", [str((2**32) ** 2 - 1)]),
+    ("isqrt", [str((2**32) ** 2 + 1)]),
+    # An odd and an even bit length, which pick different first guesses.
+    ("isqrt", [str(2**101)]), ("isqrt", [str(2**100)]),
+    # Large, where the answer is itself many limbs: a 4096-bit operand has
+    # a 2048-bit root, and the two squares either side of it.
+    ("isqrt", [str(2**4096)]), ("isqrt", [str(2**4096 - 1)]),
+    ("isqrt", [str((2**2048 - 1) ** 2)]),
+    ("isqrt", [str((2**2048 - 1) ** 2 - 1)]),
+    ("isqrt", [str((2**2048 - 1) ** 2 + 1)]),
+    # A long run of ones and a value just under a perfect square, both of
+    # which make the iteration take its maximum number of steps.
+    ("isqrt", [str(2**8000 - 1)]), ("isqrt", [str((2**1000 + 12345) ** 2 - 1)]),
+
     # --- gcd ----------------------------------------------------------
     # Zero on either side, where the answer is the other operand's
     # magnitude, and gcd(0, 0), which math.gcd answers 0 rather than

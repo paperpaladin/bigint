@@ -20,6 +20,7 @@ typedef uint32_t bi_limb;
 #define BI_ENEGSHIFT  2
 #define BI_ENEGPOW    3
 #define BI_ETOOBIG    4
+#define BI_ENEGSQRT   5
 
 /* shortcut: 16 Mbit, i.e. 2 MB of limbs, as the largest value any single
  * operation will produce from a small input. Raise it, or drop the check and
@@ -148,6 +149,11 @@ int bi_powm_counted(bi *r, const bi *a, const bi *e, const bi *m,
 /* Greatest common divisor, as Python's math.gcd: non-negative whatever the
  * signs of the operands, and 0 for gcd(0, 0). Binary GCD; see bigint.c. */
 void bi_gcd(bi *r, const bi *a, const bi *b);
+
+/* floor(sqrt(a)), as Python's math.isqrt. A negative operand is
+ * BI_ENEGSQRT, where Python raises ValueError: there is no integer to
+ * return, so refusing is the only answer that is not a lie. */
+int bi_isqrt(bi *r, const bi *a);
 
 int bi_bits(const bi *x);   /* bit length of |x|; 0 for zero, as Python */
 

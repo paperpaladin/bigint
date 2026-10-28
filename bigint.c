@@ -902,6 +902,49 @@ void bi_gcd(bi *r, const bi *a, const bi *b)
     bi_free(&t);
 }
 
+/* Integer square root by Newton iteration, against Python's math.isqrt.
+ *
+ * The first guess is a power of two at or above the answer, which is what
+ * makes the iteration monotone decreasing: "stop when it stops getting
+ * smaller" is then an exact termination test rather than a tolerance, and
+ * the value it stops at is floor(sqrt(a)) and not an approximation of it.
+ *
+ * A negative operand is BI_ENEGSQRT, where Python raises ValueError. There
+ * is no answer to return, so refusing is the only option that is not a
+ * lie.
+ */
+int bi_isqrt(bi *r, const bi *a)
+{
+    bi x, y, q, s;
+    int bits = bi_bits(a);
+
+    if (a->sign < 0) return BI_ENEGSQRT;
+    if (bits == 0) { bi_set_i64(r, 0); return BI_OK; }
+    if (bits <= 2) { bi_set_i64(r, 1); return BI_OK; }   /* 1, 2, 3 */
+
+    bi_init(&x);
+    bi_init(&y);
+    bi_init(&q);
+    bi_init(&s);
+    bi_set_i64(&y, 1);
+    ushl(&x, &y, (uint64_t)((bits + 1) / 2));      /* 2^ceil(bits/2) */
+
+    for (;;) {
+        bi_divmod(&q, NULL, a, &x);                /* q = a / x */
+        bi_add(&s, &x, &q);
+        (void)ushr(&y, &s, 1);                     /* y = (x + a/x) / 2 */
+        if (bi_cmp(&y, &x) >= 0) break;
+        bi_swap(&x, &y);
+    }
+
+    bi_swap(r, &x);
+    bi_free(&x);
+    bi_free(&y);
+    bi_free(&q);
+    bi_free(&s);
+    return BI_OK;
+}
+
 static int hexval(char c)
 {
     if (c >= '0' && c <= '9') return c - '0';
@@ -990,7 +1033,7 @@ static const struct { const char *name; int ary; int hexin; } OPS[] = {
     { "hex", 1, 0 }, { "hexrt", 1, 0 }, { "unhex", 1, 1 },
     { "pow", 2, 0 }, { "mulsb", 2, 0 }, { "mulk", 2, 0 },
     { "powm", 3, 0 }, { "powmc", 3, 0 },
-    { "gcd", 2, 0 },
+    { "gcd", 2, 0 }, { "isqrt", 1, 0 },
 };
 
 static void emit(const bi *x)
@@ -1113,7 +1156,7 @@ static void powmbench(int nlimbs, int ebits, int reps)
 static int fail(int e)
 {
     static const char *const msg[] = { "", "divzero", "negshift", "negpow",
-                                       "toobig" };
+                                       "toobig", "negsqrt" };
     printf("E %s\n", msg[e]);
     return 1;
 }
@@ -1291,6 +1334,10 @@ int main(void)
         }
 
         else if (!strcmp(op, "gcd")) { bi_gcd(&r, &a, &b); emit(&r); }
+        else if (!strcmp(op, "isqrt")) {
+            int e4 = bi_isqrt(&r, &a);
+            if (e4) fail(e4); else emit(&r);
+        }
 
         else if (!strcmp(op, "hex")) {
             char *s = bi_to_hex(&a);
