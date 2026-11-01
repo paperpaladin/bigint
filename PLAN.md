@@ -405,10 +405,26 @@ function's output is its arguments.
             its comment says it does not accept. A hang is a dead mutant
             and is recorded as a different kind of evidence from a wrong
             answer.
-- [ ] 23 `bi_isqrt` by Newton iteration, against `math.isqrt`
+- [x] 23 `bi_isqrt` by Newton iteration, against `math.isqrt`
       note: 21 to 23 are all "second implementation of something Python
             already has", the cheapest kind of work here: the oracle
             is free and exact.
+      done: the first guess is 2^ceil(bits/2), at or above the answer, which
+            makes the sequence monotone decreasing so "stop when it stops
+            getting smaller" is an exact termination test rather than a
+            tolerance. A negative operand is refused with BI_ENEGSQRT where
+            Python raises, and the refusal is modelled in the comparison the
+            way the negative-exponent case already was, so the two agree
+            there is no answer rather than agreeing on a value. Cases sit
+            either side of perfect squares at limb boundaries, because an
+            iteration stopping one step early or late is right on the square
+            and wrong on both neighbours.
+            Mutating the termination test from >= to > is useless: the
+            iteration reaches its fixed point, declines to break, and swaps
+            two equal values forever. The suite has no per-case timeout so
+            it hangs rather than failing, which is worth knowing about the
+            suite. The off-by-one in the first guess is the mutation that
+            works, and several cases catch it.
 
 ### Milestone 3: asymptotics
 
